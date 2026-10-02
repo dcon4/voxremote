@@ -1,10 +1,15 @@
 package dev.minios.ocremote.ui.screens.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
 import com.composables.icons.lucide.*
 import dev.minios.ocremote.ui.components.backIcon
 import dev.minios.ocremote.ui.components.forwardIcon
 import dev.minios.ocremote.ui.components.mirrorForRtl
 import dev.minios.ocremote.ui.components.undoIcon
+import dev.minios.ocremote.voice.SpeechToText
+import dev.minios.ocremote.voice.SpeechToTextListener
+import androidx.core.content.ContextCompat
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.AnimationState
@@ -1637,6 +1642,162 @@ fun ChatScreen(
         }
     }
 
+    // Shared send pipeline — used by the send button, the confirm dialog,
+    // and auto-send after dictation.
+    fun performSend() {
+        val isShellMode = inputMode == ChatInputMode.SHELL.name
+        AppHaptics.perform(
+            view,
+            AppHapticConfig(hapticEnabled, hapticDurationMillis, hapticAmplitude),
+        )
+        val rawText = inputText.text
+        val shellCommand = when {
+            isShellMode -> rawText.trim()
+            rawText.startsWith("!") -> rawText.drop(1).trimStart()
+            else -> null
+        }
+        if (shellCommand != null) {
+            if (shellCommand.isBlank()) {
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar(context.getString(R.string.chat_shell_empty))
+                }
+                return
+            }
+            if (attachments.isNotEmpty()) {
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar(context.getString(R.string.chat_shell_attachments_unsupported))
+                }
+                return
+            }
+            viewModel.runShellCommand(shellCommand) { ok ->
+                if (!ok) {
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar(context.getString(R.string.chat_shell_failed))
+                    }
+                }
+            }
+            inputText = TextFieldValue("")
+            if (isShellMode) {
+                inputMode = ChatInputMode.NORMAL.name
+            }
+            viewModel.clearConfirmedPaths()
+            viewModel.clearFileSearch()
+            viewModel.clearDraft()
+            return
+        }
+        // Build prompt parts: split text around confirmed @file mentions
+        val allParts = buildPromptParts(rawText, confirmedFilePaths, viewModel.getSessionDirectory())
+        // Add image attachments
+        val attachmentParts = attachments.map { att ->
+            PromptPart(
+                type = "file",
+                mime = att.mime,
+                url = att.dataUrl,
+                filename = att.filename
+            )
+        }
+        if (viewModel.sendMessage(allParts, attachmentParts)) {
+            inputText = TextFieldValue("")
+            attachments.clear()
+            viewModel.clearConfirmedPaths()
+            viewModel.clearFileSearch()
+            viewModel.clearDraft()
+        }
+    }
+
+    // ============ Voice dictation ============
+    val voiceListenSeconds by viewModel.voiceListenSeconds.collectAsState()
+    val voicePauseSeconds by viewModel.voicePauseSeconds.collectAsState()
+    var isDictating by remember { mutableStateOf(false) }
+
+    val listenSecondsState = rememberUpdatedState(voiceListenSeconds)
+    val pauseSecondsState = rememberUpdatedState(voicePauseSeconds)
+
+    fun applyDictationResult(rawText: String) {
+        if (rawText.isBlank()) return
+        val current = inputText.text
+        val merged = if (current.isBlank()) rawText else current.trimEnd() + " " + rawText
+        inputText = TextFieldValue(merged, TextRange(merged.length))
+        viewModel.updateDraftText(merged)
+        // Auto-send only when the existing "confirm before send" setting is off.
+        if (!confirmBeforeSend && inputMode != ChatInputMode.SHELL.name) {
+            performSend()
+        }
+    }
+
+    val speechToText = remember(context) {
+        SpeechToText(
+            context = context,
+            listenSeconds = { listenSecondsState.value },
+            pauseSeconds = { pauseSecondsState.value },
+            listener = object : SpeechToTextListener {
+                override fun onListeningChanged(listening: Boolean) {
+                    isDictating = listening
+                    viewModel.setMicActive(listening)
+                }
+
+                override fun onTranscript(text: String) {
+                    isDictating = false
+                    viewModel.setMicActive(false)
+                    applyDictationResult(text)
+                }
+
+                override fun onSpeechError(message: String) {
+                    isDictating = false
+                    viewModel.setMicActive(false)
+                    coroutineScope.launch { snackbarHostState.showSnackbar(message) }
+                }
+
+                override fun onNoSpeech() {
+                    isDictating = false
+                    viewModel.setMicActive(false)
+                }
+            }
+        )
+    }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            speechToText.start()
+        } else {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar(context.getString(R.string.voice_permission_denied))
+            }
+        }
+    }
+
+    fun startDictation() {
+        if (speechToText.isActive()) return
+        val granted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        // Barge-in: any spoken reply stops the moment the mic opens.
+        viewModel.setMicActive(true)
+        // Optional "Listening" cue, then open the mic (ARYA behavior).
+        viewModel.announceListening { speechToText.start() }
+    }
+
+    // Notification "Listen" action (replay=1 so a cold start is not lost).
+    LaunchedEffect(Unit) {
+        viewModel.micTrigger.collect {
+            viewModel.consumeMicTrigger()
+            startDictation()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            speechToText.cancel()
+            viewModel.setMicActive(false)
+        }
+    }
+
     CompositionLocalProvider(
         LocalChatFontSize provides chatFontSize,
         LocalCodeWordWrap provides codeWordWrap,
@@ -2013,70 +2174,11 @@ fun ChatScreen(
                     }
                 },
                 onSend = {
-                    val doSend = doSend@{
-                        AppHaptics.perform(
-                            view,
-                            AppHapticConfig(hapticEnabled, hapticDurationMillis, hapticAmplitude),
-                        )
-                        val rawText = inputText.text
-                        val shellCommand = when {
-                            isShellMode -> rawText.trim()
-                            rawText.startsWith("!") -> rawText.drop(1).trimStart()
-                            else -> null
-                        }
-                        if (shellCommand != null) {
-                            if (shellCommand.isBlank()) {
-                                coroutineScope.launch {
-                                    snackbarHostState.showSnackbar(context.getString(R.string.chat_shell_empty))
-                                }
-                                return@doSend
-                            }
-                            if (attachments.isNotEmpty()) {
-                                coroutineScope.launch {
-                                    snackbarHostState.showSnackbar(context.getString(R.string.chat_shell_attachments_unsupported))
-                                }
-                                return@doSend
-                            }
-                            viewModel.runShellCommand(shellCommand) { ok ->
-                                if (!ok) {
-                                    coroutineScope.launch {
-                                        snackbarHostState.showSnackbar(context.getString(R.string.chat_shell_failed))
-                                    }
-                                }
-                            }
-                            inputText = TextFieldValue("")
-                            if (isShellMode) {
-                                inputMode = ChatInputMode.NORMAL.name
-                            }
-                            viewModel.clearConfirmedPaths()
-                            viewModel.clearFileSearch()
-                            viewModel.clearDraft()
-                            return@doSend
-                        }
-                        // Build prompt parts: split text around confirmed @file mentions
-                        val allParts = buildPromptParts(rawText, confirmedFilePaths, viewModel.getSessionDirectory())
-                        // Add image attachments
-                        val attachmentParts = attachments.map { att ->
-                            PromptPart(
-                                type = "file",
-                                mime = att.mime,
-                                url = att.dataUrl,
-                                filename = att.filename
-                            )
-                        }
-                        if (viewModel.sendMessage(allParts, attachmentParts)) {
-                            inputText = TextFieldValue("")
-                            attachments.clear()
-                            viewModel.clearConfirmedPaths()
-                            viewModel.clearFileSearch()
-                            viewModel.clearDraft()
-                        }
-                    }
                     if (confirmBeforeSend) {
-                        pendingSendAction = doSend
+                        pendingSendAction = { performSend() }
                         showSendConfirmDialog = true
                     } else {
-                        doSend()
+                        performSend()
                     }
                 },
                 inputMode = if (isShellMode) ChatInputMode.SHELL else ChatInputMode.NORMAL,
@@ -2087,6 +2189,10 @@ fun ChatScreen(
                     }
                 },
                 onStop = viewModel::abortSession,
+                onMic = {
+                    if (isDictating) speechToText.stop() else startDictation()
+                },
+                isDictating = isDictating,
                 isSending = uiState.isSending,
                 isBusy = isWorkingSessionStatus(uiState.sessionStatus) || hasRunningTool,
                 sessionStatus = uiState.sessionStatus,
@@ -7805,6 +7911,8 @@ private fun ChatInputBar(
     onTextFieldValueChange: (TextFieldValue) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    onMic: () -> Unit = {},
+    isDictating: Boolean = false,
     isSending: Boolean,
     isBusy: Boolean = false,
     sessionStatus: SessionStatus = SessionStatus.Idle,
@@ -8516,6 +8624,37 @@ private fun ChatInputBar(
                             }
                         }
                     }
+                }
+
+                // Dictation mic — tap to start, tap again to stop
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(
+                            if (isDictating) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                            } else {
+                                Color.Transparent
+                            }
+                        )
+                        .clickable(onClick = onMic),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Lucide.Mic,
+                        contentDescription = if (isDictating) {
+                            stringResource(R.string.chat_mic_stop)
+                        } else {
+                            stringResource(R.string.chat_mic)
+                        },
+                        modifier = Modifier.size(20.dp),
+                        tint = if (isDictating) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        },
+                    )
                 }
 
                 // Send button — tap to send, long-press toggles shell mode

@@ -12,14 +12,14 @@ TERMUX_PROPERTIES_FILE="$TERMUX_PROPERTIES_DIR/termux.properties"
 SETUP_SCRIPT_PATH="$INSTALL_DIR/setup.sh"
 SETUP_SHA_FILE="$INSTALL_DIR/setup.sha256"
 SETUP_SHA_SOURCES=(
-    "https://raw.githubusercontent.com/crim50n/oc-remote/master/scripts/opencode-local-setup.sha256"
-    "https://github.com/crim50n/oc-remote/raw/master/scripts/opencode-local-setup.sha256"
-    "https://cdn.jsdelivr.net/gh/crim50n/oc-remote@master/scripts/opencode-local-setup.sha256"
+    "https://raw.githubusercontent.com/dcon4/voxremote/master/scripts/opencode-local-setup.sha256"
+    "https://github.com/dcon4/voxremote/raw/master/scripts/opencode-local-setup.sha256"
+    "https://cdn.jsdelivr.net/gh/dcon4/voxremote@master/scripts/opencode-local-setup.sha256"
 )
 SETUP_SCRIPT_SOURCES=(
-    "https://raw.githubusercontent.com/crim50n/oc-remote/master/scripts/opencode-local-setup.sh"
-    "https://github.com/crim50n/oc-remote/raw/master/scripts/opencode-local-setup.sh"
-    "https://cdn.jsdelivr.net/gh/crim50n/oc-remote@master/scripts/opencode-local-setup.sh"
+    "https://raw.githubusercontent.com/dcon4/voxremote/master/scripts/opencode-local-setup.sh"
+    "https://github.com/dcon4/voxremote/raw/master/scripts/opencode-local-setup.sh"
+    "https://cdn.jsdelivr.net/gh/dcon4/voxremote@master/scripts/opencode-local-setup.sh"
 )
 
 # Debian rootfs from GitHub Releases CDN (fast).
@@ -565,7 +565,7 @@ HOST="127.0.0.1"
 ENV_FILE="$HOME/opencode-local/env"
 SETUP_DIR="$HOME/opencode-local"
 SETUP_SCRIPT="$SETUP_DIR/setup.sh"
-SETUP_REMOTE_URL="https://raw.githubusercontent.com/crim50n/oc-remote/master/scripts/opencode-local-setup.sh"
+SETUP_REMOTE_URL="https://raw.githubusercontent.com/dcon4/voxremote/master/scripts/opencode-local-setup.sh"
 CLI_PROXY_URL=""
 CLI_NO_PROXY=""
 CLI_HOST=""
@@ -835,7 +835,7 @@ case "$cmd" in
             "$INSTALL_DIR/status.sh"
         else
             echo "Local runtime scripts: missing"
-            echo "Run setup first: curl -fsSL https://raw.githubusercontent.com/crim50n/oc-remote/master/scripts/opencode-local-setup.sh | bash"
+            echo "Run setup first: curl -fsSL https://raw.githubusercontent.com/dcon4/voxremote/master/scripts/opencode-local-setup.sh | bash"
             exit 1
         fi
         ;;
@@ -1073,7 +1073,7 @@ uninstall_all() {
     ok "Local runtime removed"
 
     printf "\n  ${GREEN}${BOLD}Uninstall complete${RESET}\n"
-    printf "  ${DIM}Reinstall anytime with:${RESET} ${BOLD}curl -fsSL https://raw.githubusercontent.com/crim50n/oc-remote/master/scripts/opencode-local-setup.sh | bash${RESET}\n\n"
+    printf "  ${DIM}Reinstall anytime with:${RESET} ${BOLD}curl -fsSL https://raw.githubusercontent.com/dcon4/voxremote/master/scripts/opencode-local-setup.sh | bash${RESET}\n\n"
 }
 
 refresh_runtime_scripts_only() {

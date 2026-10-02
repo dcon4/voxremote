@@ -38,9 +38,9 @@ import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private const val RICH_UPDATE_MANIFEST_URL = "https://github.com/crim50n/oc-remote/releases/latest/download/update.json"
-private const val UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/crim50n/oc-remote/master/update.json"
-private const val GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/crim50n/oc-remote/releases/latest"
+private const val RICH_UPDATE_MANIFEST_URL = "https://github.com/dcon4/voxremote/releases/latest/download/update.json"
+private const val UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/dcon4/voxremote/master/update.json"
+private const val GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/dcon4/voxremote/releases/latest"
 private const val CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 private const val MAX_RESPONSE_BYTES = 64 * 1024L
 private const val MAX_MANIFEST_CHARS = 8 * 1024

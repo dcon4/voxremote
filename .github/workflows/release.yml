@@ -37,8 +37,8 @@ jobs:
 
       - name: Validate release metadata
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF_NAME" != "master" ]; then
-            echo "::error::Manual releases must run from master, not $GITHUB_REF_NAME"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "::error::Manual releases must run from main, not $GITHUB_REF_NAME"
             exit 1
           fi
           if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v${{ steps.version.outputs.name }}" ]; then
@@ -48,7 +48,7 @@ jobs:
           MANIFEST_VERSION=$(python3 -c 'import json; print(json.load(open("update.json"))["versionName"])')
           MANIFEST_CODE=$(python3 -c 'import json; print(json.load(open("update.json"))["versionCode"])')
           MANIFEST_URL=$(python3 -c 'import json; print(json.load(open("update.json"))["releaseUrl"])')
-          EXPECTED_URL="https://github.com/crim50n/oc-remote/releases/tag/v${{ steps.version.outputs.name }}"
+          EXPECTED_URL="https://github.com/dcon4/voxremote/releases/tag/v${{ steps.version.outputs.name }}"
           test "$MANIFEST_VERSION" = "${{ steps.version.outputs.name }}" || { echo "::error::update.json versionName mismatch"; exit 1; }
           test "$MANIFEST_CODE" = "${{ steps.version.outputs.code }}" || { echo "::error::update.json versionCode mismatch"; exit 1; }
           test "$MANIFEST_URL" = "$EXPECTED_URL" || { echo "::error::update.json releaseUrl mismatch"; exit 1; }
@@ -112,9 +112,9 @@ jobs:
           manifest = {
               "versionName": version,
               "versionCode": int(os.environ["VERSION_CODE"]),
-              "releaseUrl": f"https://github.com/crim50n/oc-remote/releases/tag/v{version}",
+              "releaseUrl": f"https://github.com/dcon4/voxremote/releases/tag/v{version}",
               "packageName": "dev.minios.ocremote",
-              "apkUrl": f"https://github.com/crim50n/oc-remote/releases/download/v{version}/oc-remote-{version}.apk",
+              "apkUrl": f"https://github.com/dcon4/voxremote/releases/download/v{version}/voxremote-{version}.apk",
               "sha256": os.environ["SHA256"],
           }
           with open("release-metadata/update.json", "w", encoding="utf-8") as output:

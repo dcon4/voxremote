@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">OC Remote</string>
-    
+    <string name="app_name">VoxRemote</string>
+
     <!-- Home Screen -->
-    <string name="home_title">OC Remote</string>
+    <string name="home_title">VoxRemote</string>
     <string name="home_add_server">Add Server</string>
     <string name="home_no_servers">No servers configured</string>
     <string name="home_server_health_good">Connected</string>
@@ -56,7 +56,7 @@
     <string name="home_local_run_background_label">Run server in background</string>
     <string name="home_local_run_background_desc">Use Termux background task mode to start local runtime</string>
     <string name="home_local_auto_start_label">Auto-start local server on app launch</string>
-    <string name="home_local_auto_start_desc">Start local runtime automatically when OC Remote opens</string>
+    <string name="home_local_auto_start_desc">Start local runtime automatically when VoxRemote opens</string>
     <string name="home_local_auto_start_requires_background">Auto-start requires background mode</string>
     <string name="home_local_startup_timeout_label">Startup timeout</string>
     <string name="home_local_startup_timeout_value">%1$d sec</string>
@@ -577,7 +577,7 @@
     <string name="notification_connecting">Connecting to %1$s…</string>
     <string name="notification_connected_count">Connected to %1$d of %2$d servers</string>
     <string name="notification_exit">Exit</string>
-    <string name="notification_inbox_title">OC Remote — %1$d/%2$d connected</string>
+    <string name="notification_inbox_title">VoxRemote — %1$d/%2$d connected</string>
     <string name="notification_status_connected">Connected</string>
     <string name="notification_status_connecting">Connecting…</string>
     <string name="notification_response_ready">Response ready</string>
@@ -673,16 +673,51 @@ Tokens: ~%4$d -&gt; ~%5$d</string>
     <!-- About Screen -->
     <string name="about_title">About</string>
     <string name="about_version">Version %s</string>
-    <string name="about_description">Android client for OpenCode servers</string>
-    <string name="about_unofficial">This is an unofficial community project, not affiliated with the OpenCode team.</string>
+    <string name="about_description">Voice-enabled Android client for OpenCode servers</string>
+    <string name="about_unofficial">An independent, voice-enabled fork of OC Remote. Not affiliated with the OpenCode team or the OC Remote project.</string>
     <string name="about_github">GitHub</string>
-    <string name="about_github_url">https://github.com/crim50n/oc-remote</string>
+    <string name="about_github_url">https://github.com/dcon4/voxremote</string>
     <string name="about_opencode">OpenCode</string>
     <string name="about_opencode_url">https://github.com/anomalyco/opencode</string>
     <string name="about_license">License</string>
     <string name="about_license_value">MIT</string>
     <string name="about_check_updates">Check for updates</string>
     <string name="about_check_updates_desc">Check GitHub for a newer release</string>
+
+    <!-- Voice -->
+    <string name="settings_section_voice">Voice</string>
+    <string name="settings_voice_read_replies">Read replies aloud</string>
+    <string name="settings_voice_read_replies_desc">Speak the assistant reply when it finishes</string>
+    <string name="settings_voice_announce">Say Listening before mic</string>
+    <string name="settings_voice_announce_desc">Speak a short cue when dictation starts</string>
+    <string name="settings_voice_listen_for">Listen for</string>
+    <string name="settings_voice_listen_for_desc">Seconds to keep listening before pausing: %1$d seconds</string>
+    <string name="settings_voice_pause_for">Pause for</string>
+    <string name="settings_voice_pause_for_desc">Seconds of silence before dictation finishes: %1$d seconds</string>
+    <string name="settings_voice_notification">Voice controller notification</string>
+    <string name="settings_voice_notification_desc">Persistent notification with Listen, Stop, Read reply, and Auto-read controls. Works with RemoteFix headset buttons.</string>
+    <string name="settings_voice_test">Test voice</string>
+    <string name="settings_voice_test_desc">Speak a short sample</string>
+    <string name="settings_voice_test_message">Voice is working.</string>
+    <string name="settings_voice_tts_engine">Text-to-speech engine</string>
+    <string name="settings_voice_tts_engine_desc">Which voice speaks replies, for example Ivona</string>
+    <string name="settings_voice_tts_engine_value">System default</string>
+    <string name="settings_voice_tts_engine_unavailable">That speech engine is no longer installed; using the system default</string>
+    <string name="voice_notification_title">VoxRemote voice</string>
+    <string name="voice_notification_text">Listen, Stop, Read reply, Auto-read</string>
+    <string name="voice_notification_auto_on">Auto-read is on</string>
+    <string name="voice_notification_auto_off">Auto-read is off</string>
+    <string name="voice_action_listen">Listen</string>
+    <string name="voice_action_stop">Stop</string>
+    <string name="voice_action_read">Read reply</string>
+    <string name="voice_action_autoread">Auto-read</string>
+    <string name="voice_no_reply">No reply to read yet</string>
+    <string name="voice_permission_denied">Microphone permission is needed for voice input</string>
+    <string name="voice_recognition_unavailable">Speech recognition is not available on this phone</string>
+    <string name="voice_recognition_failed">Voice input failed</string>
+    <string name="voice_listening">Listening</string>
+    <string name="chat_mic">Dictate message</string>
+    <string name="chat_mic_stop">Stop dictation</string>
 
     <!-- Settings sync -->
     <string name="sync_title">Settings sync</string>

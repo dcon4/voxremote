@@ -1,16 +1,18 @@
-# OC Remote
+# VoxRemote
 
-Android client for [OpenCode](https://github.com/anomalyco/opencode) servers with a native UI and broad feature coverage.
+Voice-enabled Android client for [OpenCode](https://github.com/anomalyco/opencode) servers — an independent fork of OC Remote with speech input, spoken replies, and a persistent notification controller.
 
-**This is an unofficial community project, not affiliated with the OpenCode team.**
+**This is an unofficial community project, not affiliated with the OpenCode team or the OC Remote project.**
 
-## Why OC Remote
+## Why VoxRemote
 
+- **Talk instead of type** — dictate messages with your voice and hear replies read aloud
+- **Drive it from anywhere** — a persistent notification with Listen, Stop, Read reply, and Auto-read controls, compatible with RemoteFix headset-button mapping
 - **Work from anywhere** — use OpenCode through a mobile-first native chat or a full interactive terminal
 - **Stay connected** — manage, reorder, and reconnect multiple remote servers, or run OpenCode directly on-device through Termux
 - **Keep projects organized** — search, favorite, categorize, reorder, share, export, and revisit sessions across servers
 - **Use the complete workflow** — stream responses, inspect tool output and context usage, attach files, answer questions, approve permissions, and run session actions without falling back to a desktop
-- **Make it yours** — choose from 15 locales, flexible themes including AMOLED, and detailed chat, connection, notification, and image controls
+- **Make it yours** — choose from 15 locales, flexible themes including AMOLED, and detailed chat, connection, notification, image, and voice controls
 - **Operate reliably** — keep cached server content available during disconnects, resume safely after reconnect, review detailed sync conflicts, limit diagnostic exports, and use cryptographically verified in-app updates
 
 ## Screenshots
@@ -32,6 +34,15 @@ Android client for [OpenCode](https://github.com/anomalyco/opencode) servers wit
 </p>
 
 ## Features
+
+### Voice
+- **Dictation** — mic button in the chat composer turns speech into text; dictated text lands in the input box, and sends immediately when "confirm before send" is off
+- **Utterance stitching** — short pauses mid-sentence don't cut your message short; dictation keeps listening through a configurable pause window before finishing
+- **Spoken replies** — finished assistant replies are read aloud automatically (toggle), plus a "Read reply" action any time
+- **Listening cue** — optional "Listening" announcement before the microphone opens; any spoken reply is cut off when the mic opens (barge-in)
+- **Voice controller notification** — persistent notification with Listen, Stop, Read reply, and Auto-read controls, driven by MediaStyle/MediaSession so RemoteFix headset buttons map to it (actions 0–3: Listen, Stop, Read reply, Auto-read)
+- **Text-to-speech engine picker** — choose any installed engine (for example Ivona, Google, Samsung) instead of the platform default
+- **Tunable timing** — listen window (15–180 s) and pause window (2–10 s) are adjustable in Settings → Voice
 
 ### Native UI
 - **Full chat interface** — native Material 3 UI with GFM markdown, code blocks, task markers, strikethrough, scrollable tables, syntax highlighting, and copy actions

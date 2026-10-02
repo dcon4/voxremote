@@ -1,12 +1,16 @@
 package dev.minios.ocremote.ui.screens.settings
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.minios.ocremote.data.repository.LocalServerManager
 import dev.minios.ocremote.data.repository.SettingsRepository
 import dev.minios.ocremote.data.repository.SyncRepository
 import dev.minios.ocremote.data.repository.SyncState
+import dev.minios.ocremote.voice.VoiceController
+import dev.minios.ocremote.voice.VoiceControllerService
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -16,6 +20,8 @@ import javax.inject.Inject
 class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     syncRepository: SyncRepository,
+    private val voiceController: VoiceController,
+    @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
     val syncState = syncRepository.state.stateIn(
         scope = viewModelScope,
@@ -273,6 +279,91 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.setNotificationsEnabled(enabled)
         }
+    }
+
+    // ============ Voice ============
+
+    val voiceReadReplies = settingsRepository.voiceReadReplies.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = true
+    )
+
+    val voiceNotification = settingsRepository.voiceNotification.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = true
+    )
+
+    val voiceAnnounceListening = settingsRepository.voiceAnnounceListening.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = true
+    )
+
+    val voiceListenSeconds = settingsRepository.voiceListenSeconds.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = 60
+    )
+
+    val voicePauseSeconds = settingsRepository.voicePauseSeconds.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = 4
+    )
+
+    val voiceTtsEngine = settingsRepository.voiceTtsEngine.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = ""
+    )
+
+    fun setVoiceReadReplies(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setVoiceReadReplies(enabled)
+        }
+    }
+
+    fun setVoiceNotification(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setVoiceNotification(enabled)
+            if (enabled) {
+                VoiceControllerService.start(appContext)
+            } else {
+                VoiceControllerService.stop(appContext)
+            }
+        }
+    }
+
+    fun setVoiceAnnounceListening(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setVoiceAnnounceListening(enabled)
+        }
+    }
+
+    fun setVoiceListenSeconds(seconds: Int) {
+        viewModelScope.launch {
+            settingsRepository.setVoiceListenSeconds(seconds)
+        }
+    }
+
+    fun setVoicePauseSeconds(seconds: Int) {
+        viewModelScope.launch {
+            settingsRepository.setVoicePauseSeconds(seconds)
+        }
+    }
+
+    fun setVoiceTtsEngine(packageName: String) {
+        viewModelScope.launch {
+            settingsRepository.setVoiceTtsEngine(packageName)
+            voiceController.applyEngine(packageName)
+        }
+    }
+
+    /** Speak a short sample with the currently selected engine. */
+    fun testVoice(sample: String) {
+        voiceController.speak(sample)
     }
 
     fun setInitialMessageCount(count: Int) {

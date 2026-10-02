@@ -15,11 +15,11 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "dev.minios.ocremote"
+        applicationId = "com.dcon4.voxremote"
         minSdk = 26
         targetSdk = 34
-        versionCode = 27
-        versionName = "1.10.0"
+        versionCode = 28
+        versionName = "1.11.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -44,10 +44,25 @@ android {
         buildTypes.getByName("release").signingConfig = signingConfigs.getByName("release")
     }
 
+    // Pinned debug keystore checked into the repo so CI and local builds
+    // produce APKs that install as upgrades over each other (AGENTS requirement).
+    val pinnedDebugKeystore = rootProject.file("debug.keystore")
+    if (pinnedDebugKeystore.exists()) {
+        signingConfigs.getByName("debug") {
+            storeFile = pinnedDebugKeystore
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
-            manifestPlaceholders["appLabel"] = "OC Remote Dev"
+            manifestPlaceholders["appLabel"] = "VoxRemote Dev"
+            if (pinnedDebugKeystore.exists()) {
+                signingConfig = signingConfigs.getByName("debug")
+            }
         }
         release {
             manifestPlaceholders["appLabel"] = "@string/app_name"

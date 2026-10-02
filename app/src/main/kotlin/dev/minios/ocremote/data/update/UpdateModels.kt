@@ -4,9 +4,9 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 private const val REPOSITORY_HOST = "github.com"
-private const val REPOSITORY_OWNER = "crim50n"
-private const val REPOSITORY_NAME = "oc-remote"
-private const val APPLICATION_ID = "dev.minios.ocremote"
+private const val REPOSITORY_OWNER = "dcon4"
+private const val REPOSITORY_NAME = "voxremote"
+private const val APPLICATION_ID = "com.dcon4.voxremote"
 
 @Serializable
 data class UpdateManifestDto(

@@ -34,6 +34,7 @@ import dev.minios.ocremote.domain.model.ServerConfig
 import dev.minios.ocremote.service.OpenCodeConnectionService
 import dev.minios.ocremote.ui.navigation.NavGraph
 import dev.minios.ocremote.ui.theme.OpenCodeTheme
+import dev.minios.ocremote.voice.VoiceController
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -92,6 +93,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var serverConnectionStateRepository: ServerConnectionStateRepository
+
+    @Inject
+    lateinit var voiceController: VoiceController
     
     /**
      * Shared flow for deep-link events from notification taps.
@@ -168,6 +172,8 @@ class MainActivity : ComponentActivity() {
         // Handle notification tap that launched the activity
         handleSessionIntent(intent)
         handleSyncSettingsIntent(intent)
+        // Voice notification "Listen" action
+        handleMicIntent(intent)
         // Handle attachments shared into the activity
         handleShareIntent(intent)
         
@@ -231,6 +237,7 @@ class MainActivity : ComponentActivity() {
         // Handle notification tap when activity is already running
         handleSessionIntent(intent)
         handleSyncSettingsIntent(intent)
+        handleMicIntent(intent)
         // Handle attachments shared while the activity is already running
         handleShareIntent(intent)
     }
@@ -283,6 +290,40 @@ class MainActivity : ComponentActivity() {
 
     private fun handleSyncSettingsIntent(intent: Intent?) {
         if (intent?.action == ACTION_OPEN_SYNC_SETTINGS) _syncSettingsFlow.tryEmit(Unit)
+    }
+
+    /**
+     * Voice notification "Listen": open the last used chat, then start
+     * dictating there. ChatScreen consumes [VoiceController.micTrigger]
+     * once it is on screen.
+     */
+    private fun handleMicIntent(intent: Intent?) {
+        if (intent?.action != ACTION_START_MIC) return
+        lifecycleScope.launch {
+            val last = voiceController.lastSession()
+            if (last == null) {
+                Log.w(TAG, "Mic trigger ignored: no remembered session")
+                return@launch
+            }
+            val server = serverRepository.getServer(last.serverId)
+            if (server == null) {
+                Log.w(TAG, "Mic trigger ignored: server ${last.serverId} not configured")
+                return@launch
+            }
+            Log.i(TAG, "Mic trigger → session ${last.sessionId} on ${server.displayName}")
+            _deepLinkFlow.emit(
+                SessionDeepLink(
+                    serverId = server.id,
+                    serverUrl = server.url,
+                    username = server.username,
+                    password = server.password ?: "",
+                    serverName = server.displayName,
+                    sessionPath = "",
+                    sessionId = last.sessionId,
+                )
+            )
+            voiceController.requestMicStart()
+        }
     }
 
     /**
@@ -346,6 +387,9 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_OPEN_SYNC_SETTINGS = "dev.minios.ocremote.OPEN_SYNC_SETTINGS"
+
+        /** Launched by the voice controller notification's Listen action. */
+        const val ACTION_START_MIC = "com.dcon4.voxremote.action.START_MIC"
 
         /** Parse BCP 47 tag (e.g. "pt-BR", "zh-CN", "en") into a [Locale]. */
         fun parseLocale(tag: String): Locale {

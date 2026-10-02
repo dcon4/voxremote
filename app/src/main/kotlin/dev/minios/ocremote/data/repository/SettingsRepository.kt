@@ -84,6 +84,12 @@ class SettingsRepository @Inject constructor(
         private val SESSION_CATEGORIES_KEY = stringPreferencesKey("session_categories")
         private val CROSS_SERVER_FAVORITE_ORDER_KEY = stringPreferencesKey("cross_server_favorite_order")
         private val FAVORITE_SESSION_SNAPSHOTS_KEY = stringPreferencesKey("favorite_session_snapshots")
+        private val VOICE_READ_REPLIES_KEY = booleanPreferencesKey("voice_read_replies")
+        private val VOICE_NOTIFICATION_KEY = booleanPreferencesKey("voice_notification")
+        private val VOICE_ANNOUNCE_LISTENING_KEY = booleanPreferencesKey("voice_announce_listening")
+        private val VOICE_LISTEN_SECONDS_KEY = intPreferencesKey("voice_listen_seconds")
+        private val VOICE_PAUSE_SECONDS_KEY = intPreferencesKey("voice_pause_seconds")
+        private val VOICE_TTS_ENGINE_KEY = stringPreferencesKey("voice_tts_engine")
 
         /** SharedPreferences name used for synchronous locale reads in attachBaseContext. */
         private const val LOCALE_PREFS = "locale_prefs"
@@ -358,6 +364,62 @@ class SettingsRepository @Inject constructor(
         dataStore.edit { preferences ->
             preferences[NOTIFICATIONS_KEY] = enabled
         }
+    }
+
+    // ============ Voice ============
+
+    /** Speak the assistant reply aloud when a run finishes. Default: true. */
+    val voiceReadReplies: Flow<Boolean> = dataStore.data.map { preferences ->
+        preferences[VOICE_READ_REPLIES_KEY] ?: true
+    }
+
+    suspend fun setVoiceReadReplies(enabled: Boolean) {
+        dataStore.edit { preferences -> preferences[VOICE_READ_REPLIES_KEY] = enabled }
+    }
+
+    /** Show the persistent voice controller notification. Default: true. */
+    val voiceNotification: Flow<Boolean> = dataStore.data.map { preferences ->
+        preferences[VOICE_NOTIFICATION_KEY] ?: true
+    }
+
+    suspend fun setVoiceNotification(enabled: Boolean) {
+        dataStore.edit { preferences -> preferences[VOICE_NOTIFICATION_KEY] = enabled }
+    }
+
+    /** Speak a short cue before the microphone starts. Default: true. */
+    val voiceAnnounceListening: Flow<Boolean> = dataStore.data.map { preferences ->
+        preferences[VOICE_ANNOUNCE_LISTENING_KEY] ?: true
+    }
+
+    suspend fun setVoiceAnnounceListening(enabled: Boolean) {
+        dataStore.edit { preferences -> preferences[VOICE_ANNOUNCE_LISTENING_KEY] = enabled }
+    }
+
+    /** Maximum length of one dictation session, in seconds. Default: 60. */
+    val voiceListenSeconds: Flow<Int> = dataStore.data.map { preferences ->
+        (preferences[VOICE_LISTEN_SECONDS_KEY] ?: 60).coerceIn(10, 300)
+    }
+
+    suspend fun setVoiceListenSeconds(seconds: Int) {
+        dataStore.edit { preferences -> preferences[VOICE_LISTEN_SECONDS_KEY] = seconds.coerceIn(10, 300) }
+    }
+
+    /** Silence, in seconds, before a dictation is treated as finished. Default: 4. */
+    val voicePauseSeconds: Flow<Int> = dataStore.data.map { preferences ->
+        (preferences[VOICE_PAUSE_SECONDS_KEY] ?: 4).coerceIn(1, 30)
+    }
+
+    suspend fun setVoicePauseSeconds(seconds: Int) {
+        dataStore.edit { preferences -> preferences[VOICE_PAUSE_SECONDS_KEY] = seconds.coerceIn(1, 30) }
+    }
+
+    /** Package name of the preferred TTS engine ("" = system default). */
+    val voiceTtsEngine: Flow<String> = dataStore.data.map { preferences ->
+        preferences[VOICE_TTS_ENGINE_KEY] ?: ""
+    }
+
+    suspend fun setVoiceTtsEngine(packageName: String) {
+        dataStore.edit { preferences -> preferences[VOICE_TTS_ENGINE_KEY] = packageName }
     }
 
     /**

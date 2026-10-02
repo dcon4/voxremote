@@ -40,7 +40,7 @@ class LocalServerManager @Inject constructor(
         private const val STOP_SCRIPT = "$TERMUX_HOME/opencode-local/stop.sh"
 
         private const val SETUP_SCRIPT_URL =
-            "https://raw.githubusercontent.com/crim50n/oc-remote/master/scripts/opencode-local-setup.sh"
+            "https://raw.githubusercontent.com/dcon4/voxremote/master/scripts/opencode-local-setup.sh"
     }
 
     /** One-liner the user pastes into Termux to install everything. */

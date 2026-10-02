@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.BorderStroke
@@ -49,6 +50,7 @@ import dev.minios.ocremote.ui.components.SessionCategoryIconKeys
 import dev.minios.ocremote.ui.components.sessionCategoryColor
 import dev.minios.ocremote.ui.components.sessionCategoryIcon
 import dev.minios.ocremote.data.repository.SyncStatus
+import dev.minios.ocremote.voice.VoiceController
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -92,6 +94,12 @@ fun SettingsScreen(
     val showLocalRuntime by viewModel.showLocalRuntime.collectAsState()
     val terminalFontSize by viewModel.terminalFontSize.collectAsState()
     val showTerminalPanelHint by viewModel.showTerminalPanelHint.collectAsState()
+    val voiceReadReplies by viewModel.voiceReadReplies.collectAsState()
+    val voiceNotification by viewModel.voiceNotification.collectAsState()
+    val voiceAnnounceListening by viewModel.voiceAnnounceListening.collectAsState()
+    val voiceListenSeconds by viewModel.voiceListenSeconds.collectAsState()
+    val voicePauseSeconds by viewModel.voicePauseSeconds.collectAsState()
+    val voiceTtsEngine by viewModel.voiceTtsEngine.collectAsState()
     val syncState by viewModel.syncState.collectAsState()
     val hasSyncConflict = syncState.status == SyncStatus.CONFLICT
 
@@ -106,6 +114,9 @@ fun SettingsScreen(
     var showTerminalFontSizeDialog by remember { mutableStateOf(false) }
     var showImageMaxSideDialog by remember { mutableStateOf(false) }
     var showImageQualityDialog by remember { mutableStateOf(false) }
+    var showVoiceListenDialog by remember { mutableStateOf(false) }
+    var showVoicePauseDialog by remember { mutableStateOf(false) }
+    var showVoiceEngineDialog by remember { mutableStateOf(false) }
 
     val isAmoled = isAmoledTheme()
     val settingsView = LocalView.current
@@ -582,6 +593,101 @@ fun SettingsScreen(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f))
 
+            // ======== Voice ========
+            SectionHeader(stringResource(R.string.settings_section_voice))
+
+            val voiceContext = LocalContext.current
+            val testMessage = stringResource(R.string.settings_voice_test_message)
+            val engineLabel = remember(voiceTtsEngine, voiceContext) {
+                if (voiceTtsEngine.isBlank()) {
+                    null
+                } else {
+                    VoiceController.queryEngines(voiceContext)
+                        .firstOrNull { it.packageName == voiceTtsEngine }
+                        ?.label ?: voiceTtsEngine
+                }
+            }
+
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_voice_read_replies)) },
+                supportingContent = { Text(stringResource(R.string.settings_voice_read_replies_desc)) },
+                leadingContent = { Icon(Lucide.Volume2, contentDescription = null) },
+                trailingContent = {
+                    Switch(
+                        checked = voiceReadReplies,
+                        onCheckedChange = { viewModel.setVoiceReadReplies(it) },
+                        colors = switchColors
+                    )
+                },
+                modifier = Modifier.clickable { viewModel.setVoiceReadReplies(!voiceReadReplies) }
+            )
+
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_voice_notification)) },
+                supportingContent = { Text(stringResource(R.string.settings_voice_notification_desc)) },
+                leadingContent = { Icon(Lucide.BellRing, contentDescription = null) },
+                trailingContent = {
+                    Switch(
+                        checked = voiceNotification,
+                        onCheckedChange = { viewModel.setVoiceNotification(it) },
+                        colors = switchColors
+                    )
+                },
+                modifier = Modifier.clickable { viewModel.setVoiceNotification(!voiceNotification) }
+            )
+
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_voice_announce)) },
+                supportingContent = { Text(stringResource(R.string.settings_voice_announce_desc)) },
+                leadingContent = { Icon(Lucide.Ear, contentDescription = null) },
+                trailingContent = {
+                    Switch(
+                        checked = voiceAnnounceListening,
+                        onCheckedChange = { viewModel.setVoiceAnnounceListening(it) },
+                        colors = switchColors
+                    )
+                },
+                modifier = Modifier.clickable { viewModel.setVoiceAnnounceListening(!voiceAnnounceListening) }
+            )
+
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_voice_listen_for)) },
+                supportingContent = {
+                    Text(stringResource(R.string.settings_voice_listen_for_desc, voiceListenSeconds))
+                },
+                leadingContent = { Icon(Lucide.Timer, contentDescription = null) },
+                modifier = Modifier.clickable { showVoiceListenDialog = true }
+            )
+
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_voice_pause_for)) },
+                supportingContent = {
+                    Text(stringResource(R.string.settings_voice_pause_for_desc, voicePauseSeconds))
+                },
+                leadingContent = { Icon(Lucide.Pause, contentDescription = null) },
+                modifier = Modifier.clickable { showVoicePauseDialog = true }
+            )
+
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_voice_tts_engine)) },
+                supportingContent = {
+                    Text(engineLabel ?: stringResource(R.string.settings_voice_tts_engine_value))
+                },
+                leadingContent = { Icon(Lucide.Speaker, contentDescription = null) },
+                modifier = Modifier.clickable { showVoiceEngineDialog = true }
+            )
+
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_voice_test)) },
+                supportingContent = { Text(stringResource(R.string.settings_voice_test_desc)) },
+                leadingContent = { Icon(Lucide.Play, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    viewModel.testVoice(testMessage)
+                }
+            )
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f))
+
             // ======== Advanced ========
             SectionHeader(stringResource(R.string.settings_section_advanced))
 
@@ -729,6 +835,39 @@ fun SettingsScreen(
                     showImageQualityDialog = false
                 },
                 onDismiss = { showImageQualityDialog = false }
+            )
+        }
+
+        if (showVoiceListenDialog) {
+            VoiceListenPickerDialog(
+                currentSeconds = voiceListenSeconds,
+                onSelected = { seconds ->
+                    viewModel.setVoiceListenSeconds(seconds)
+                    showVoiceListenDialog = false
+                },
+                onDismiss = { showVoiceListenDialog = false }
+            )
+        }
+
+        if (showVoicePauseDialog) {
+            VoicePausePickerDialog(
+                currentSeconds = voicePauseSeconds,
+                onSelected = { seconds ->
+                    viewModel.setVoicePauseSeconds(seconds)
+                    showVoicePauseDialog = false
+                },
+                onDismiss = { showVoicePauseDialog = false }
+            )
+        }
+
+        if (showVoiceEngineDialog) {
+            VoiceEnginePickerDialog(
+                currentEngine = voiceTtsEngine,
+                onSelected = { packageName ->
+                    viewModel.setVoiceTtsEngine(packageName)
+                    showVoiceEngineDialog = false
+                },
+                onDismiss = { showVoiceEngineDialog = false }
             )
         }
 
@@ -1702,4 +1841,56 @@ private fun getImageMaxSideDisplayName(px: Int): String {
         return stringResource(R.string.settings_compress_images_max_side_keep_original)
     }
     return stringResource(R.string.settings_compress_images_max_side_value, px)
+}
+
+@Composable
+private fun VoiceListenPickerDialog(
+    currentSeconds: Int,
+    onSelected: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    SettingsPickerDialog(
+        title = stringResource(R.string.settings_voice_listen_for),
+        options = listOf(15, 30, 60, 90, 120, 180).map { it to "$it s" },
+        selectedKey = currentSeconds,
+        onSelect = onSelected,
+        onDismiss = onDismiss
+    )
+}
+
+@Composable
+private fun VoicePausePickerDialog(
+    currentSeconds: Int,
+    onSelected: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    SettingsPickerDialog(
+        title = stringResource(R.string.settings_voice_pause_for),
+        options = listOf(2, 3, 4, 5, 6, 8, 10).map { it to "$it s" },
+        selectedKey = currentSeconds,
+        onSelect = onSelected,
+        onDismiss = onDismiss
+    )
+}
+
+@Composable
+private fun VoiceEnginePickerDialog(
+    currentEngine: String,
+    onSelected: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val engines = remember { VoiceController.queryEngines(context) }
+    val defaultLabel = stringResource(R.string.settings_voice_tts_engine_value)
+    val options = buildList {
+        add("" to defaultLabel)
+        engines.forEach { engine -> add(engine.packageName to engine.label) }
+    }
+    SettingsPickerDialog(
+        title = stringResource(R.string.settings_voice_tts_engine),
+        options = options,
+        selectedKey = currentEngine,
+        onSelect = onSelected,
+        onDismiss = onDismiss
+    )
 }

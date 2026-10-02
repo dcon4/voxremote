@@ -25,6 +25,7 @@ import dev.minios.ocremote.data.repository.PendingPromptRepository
 import dev.minios.ocremote.data.repository.SettingsRepository
 import dev.minios.ocremote.data.repository.ServerConnectionStateRepository
 import dev.minios.ocremote.domain.model.*
+import dev.minios.ocremote.voice.VoiceController
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -236,6 +237,7 @@ class ChatViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val pendingPromptRepository: PendingPromptRepository,
     private val connectionStateRepository: ServerConnectionStateRepository,
+    private val voiceController: VoiceController,
 ) : ViewModel() {
 
     @Volatile
@@ -346,6 +348,22 @@ class ChatViewModel @Inject constructor(
     val imageAttachmentWebpQuality = settingsRepository.imageAttachmentWebpQuality.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5000), 60
     )
+    val voiceAnnounceListening = settingsRepository.voiceAnnounceListening.stateIn(
+        viewModelScope, SharingStarted.WhileSubscribed(5000), true
+    )
+    val voiceListenSeconds = settingsRepository.voiceListenSeconds.stateIn(
+        viewModelScope, SharingStarted.WhileSubscribed(5000), 60
+    )
+    val voicePauseSeconds = settingsRepository.voicePauseSeconds.stateIn(
+        viewModelScope, SharingStarted.WhileSubscribed(5000), 4
+    )
+
+    /** Notification "Listen" trigger — ChatScreen collects and starts dictation. */
+    val micTrigger: SharedFlow<Unit> = voiceController.micTrigger
+
+    fun consumeMicTrigger() {
+        voiceController.consumeMicTrigger()
+    }
 
     suspend fun shouldShowTerminalPanelHint(): Boolean = settingsRepository.showTerminalPanelHint.first()
     // ============ Pagination ============
@@ -633,6 +651,72 @@ class ChatViewModel @Inject constructor(
             }
         }
 
+        // Let the voice controller jump back into this session after an app restart.
+        if (sessionId.isNotBlank()) {
+            voiceController.rememberSession(serverId, sessionId)
+        }
+
+        // Read the reply aloud as soon as the model finishes working.
+        viewModelScope.launch {
+            var wasBusy = false
+            eventReducer.sessionStatuses.collect { statuses ->
+                val status = statuses[sessionId] ?: SessionStatus.Idle
+                val busy = status is SessionStatus.Busy || status is SessionStatus.Retry
+                if (wasBusy && !busy) {
+                    speakLatestReplyIfEnabled()
+                }
+                wasBusy = busy
+            }
+        }
+    }
+
+    /** True while dictating — speech is paused so the mic owns the audio focus. */
+    private var micActive = false
+
+    fun setMicActive(active: Boolean) {
+        micActive = active
+        if (active) {
+            // Barge-in: talking stops when the microphone opens (ARYA behavior).
+            voiceController.stopSpeaking()
+        }
+    }
+
+    /** Whether replies should be spoken automatically after dictation. */
+    suspend fun shouldAutoSendAfterDictation(): Boolean =
+        !settingsRepository.confirmBeforeSend.first()
+
+    fun speakTest() {
+        voiceController.speak("Hello")
+    }
+
+    /** Optional "Listening" cue before the microphone opens. */
+    fun announceListening(onReady: () -> Unit) {
+        voiceController.announceListening(onReady)
+    }
+
+    private fun speakLatestReplyIfEnabled() {
+        viewModelScope.launch {
+            if (!settingsRepository.voiceReadReplies.first()) return@launch
+            // Give the final message parts a moment to land.
+            delay(400)
+            if (micActive) return@launch
+            val reply = latestAssistantReplyText()
+            if (reply.isBlank()) return@launch
+            voiceController.saveLastReply(reply)
+            voiceController.speak(reply)
+        }
+    }
+
+    private fun latestAssistantReplyText(): String {
+        val messages = eventReducer.messages.value[sessionId].orEmpty()
+        val partsById = eventReducer.parts.value
+        return messages.asReversed().firstOrNull { it is Message.Assistant }
+            ?.let { msg ->
+                partsById[msg.id].orEmpty()
+                    .filterIsInstance<Part.Text>()
+                    .joinToString("\n") { it.text }
+            }
+            .orEmpty()
     }
 
     private suspend fun reconcileActiveStatus() {
@@ -1149,6 +1233,7 @@ class ChatViewModel @Inject constructor(
         if (!sessionPromptable) return false
         if (_isSending.value) return false
         _isSending.value = true
+        voiceController.stopSpeaking()
 
         val model = if (_selectedProviderId.value != null && _selectedModelId.value != null) {
             ModelSelection(_selectedProviderId.value!!, _selectedModelId.value!!)
