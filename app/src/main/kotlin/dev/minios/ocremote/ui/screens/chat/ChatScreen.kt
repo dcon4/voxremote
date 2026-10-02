@@ -1715,6 +1715,7 @@ fun ChatScreen(
 
     fun applyDictationResult(rawText: String) {
         if (rawText.isBlank()) return
+        Log.i("ChatScreen", "Dictation result applied (${rawText.length} chars)")
         val current = inputText.text
         val merged = if (current.isBlank()) rawText else current.trimEnd() + " " + rawText
         inputText = TextFieldValue(merged, TextRange(merged.length))
@@ -1760,6 +1761,7 @@ fun ChatScreen(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
+            Log.i("ChatScreen", "RECORD_AUDIO granted; starting dictation")
             speechToText.start()
         } else {
             coroutineScope.launch {
@@ -1769,14 +1771,19 @@ fun ChatScreen(
     }
 
     fun startDictation() {
-        if (speechToText.isActive()) return
+        if (speechToText.isActive()) {
+            Log.i("ChatScreen", "Mic requested but dictation already active; ignoring")
+            return
+        }
         val granted = ContextCompat.checkSelfPermission(
             context, Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
         if (!granted) {
+            Log.w("ChatScreen", "Mic requested but RECORD_AUDIO not granted; asking user")
             micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
+        Log.i("ChatScreen", "Mic requested; announcing cue then starting dictation")
         // Barge-in: any spoken reply stops the moment the mic opens.
         viewModel.setMicActive(true)
         // Optional "Listening" cue, then open the mic (ARYA behavior).

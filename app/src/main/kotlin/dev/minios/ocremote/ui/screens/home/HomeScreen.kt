@@ -252,6 +252,9 @@ fun HomeScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.home_title)) },
                 actions = {
+                    IconButton(onClick = { viewModel.shareLog() }) {
+                        Icon(Lucide.Bug, contentDescription = stringResource(R.string.home_share_log))
+                    }
                     IconButton(onClick = { viewModel.showAddServerDialog() }) {
                         Icon(Lucide.Plus, contentDescription = stringResource(R.string.home_add_server))
                     }

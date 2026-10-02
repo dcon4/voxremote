@@ -113,7 +113,7 @@ object UpdatePolicy {
 
     private fun expectedApkUrl(versionName: String): String {
         return "https://$REPOSITORY_HOST/$REPOSITORY_OWNER/$REPOSITORY_NAME/releases/download/" +
-            "${releaseTag(versionName)}/oc-remote-$versionName.apk"
+            "${releaseTag(versionName)}/voxremote-$versionName.apk"
     }
 
     private fun isValidVersionName(version: String): Boolean {

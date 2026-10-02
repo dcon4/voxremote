@@ -23,6 +23,7 @@ import dev.minios.ocremote.data.repository.normalizeServerUrl
 import dev.minios.ocremote.data.repository.SettingsRepository
 import dev.minios.ocremote.data.repository.DiagnosticLogRepository
 import dev.minios.ocremote.data.repository.EventReducer
+import dev.minios.ocremote.debug.DebugLogShare
 import dev.minios.ocremote.data.update.UpdateRepository
 import dev.minios.ocremote.data.update.UpdateState
 import dev.minios.ocremote.data.update.AvailableUpdate
@@ -102,6 +103,7 @@ class HomeViewModel @Inject constructor(
     private val diagnosticLogRepository: DiagnosticLogRepository,
     private val updateRepository: UpdateRepository,
     private val eventReducer: EventReducer,
+    private val debugLogShare: DebugLogShare,
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -339,6 +341,14 @@ class HomeViewModel @Inject constructor(
             serviceConnection,
             Context.BIND_AUTO_CREATE
         )
+    }
+
+    /** One-tap debug log share from the Home top bar (AGENTS requirement). */
+    fun shareLog() {
+        viewModelScope.launch {
+            runCatching { debugLogShare.share(getApplication()) }
+                .onFailure { Log.e(TAG, "Share log failed", it) }
+        }
     }
 
     fun showAddServerDialog() {

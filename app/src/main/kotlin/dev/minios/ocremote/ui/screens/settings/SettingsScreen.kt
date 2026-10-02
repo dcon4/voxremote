@@ -23,7 +23,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.BorderStroke
@@ -50,6 +49,7 @@ import dev.minios.ocremote.ui.components.SessionCategoryIconKeys
 import dev.minios.ocremote.ui.components.sessionCategoryColor
 import dev.minios.ocremote.ui.components.sessionCategoryIcon
 import dev.minios.ocremote.data.repository.SyncStatus
+import dev.minios.ocremote.voice.TtsEngineInfo
 import dev.minios.ocremote.voice.VoiceController
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -100,6 +100,7 @@ fun SettingsScreen(
     val voiceListenSeconds by viewModel.voiceListenSeconds.collectAsState()
     val voicePauseSeconds by viewModel.voicePauseSeconds.collectAsState()
     val voiceTtsEngine by viewModel.voiceTtsEngine.collectAsState()
+    val ttsEngines by viewModel.ttsEngines.collectAsState()
     val syncState by viewModel.syncState.collectAsState()
     val hasSyncConflict = syncState.status == SyncStatus.CONFLICT
 
@@ -596,13 +597,12 @@ fun SettingsScreen(
             // ======== Voice ========
             SectionHeader(stringResource(R.string.settings_section_voice))
 
-            val voiceContext = LocalContext.current
             val testMessage = stringResource(R.string.settings_voice_test_message)
-            val engineLabel = remember(voiceTtsEngine, voiceContext) {
+            val engineLabel = remember(voiceTtsEngine, ttsEngines) {
                 if (voiceTtsEngine.isBlank()) {
                     null
                 } else {
-                    VoiceController.queryEngines(voiceContext)
+                    ttsEngines
                         .firstOrNull { it.packageName == voiceTtsEngine }
                         ?.label ?: voiceTtsEngine
                 }
@@ -863,6 +863,7 @@ fun SettingsScreen(
         if (showVoiceEngineDialog) {
             VoiceEnginePickerDialog(
                 currentEngine = voiceTtsEngine,
+                engines = ttsEngines,
                 onSelected = { packageName ->
                     viewModel.setVoiceTtsEngine(packageName)
                     showVoiceEngineDialog = false
@@ -1876,15 +1877,16 @@ private fun VoicePausePickerDialog(
 @Composable
 private fun VoiceEnginePickerDialog(
     currentEngine: String,
+    engines: List<TtsEngineInfo>,
     onSelected: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val context = LocalContext.current
-    val engines = remember { VoiceController.queryEngines(context) }
     val defaultLabel = stringResource(R.string.settings_voice_tts_engine_value)
-    val options = buildList {
-        add("" to defaultLabel)
-        engines.forEach { engine -> add(engine.packageName to engine.label) }
+    val options = remember(engines, defaultLabel) {
+        buildList {
+            add("" to defaultLabel)
+            engines.forEach { engine -> add(engine.packageName to engine.label) }
+        }
     }
     SettingsPickerDialog(
         title = stringResource(R.string.settings_voice_tts_engine),

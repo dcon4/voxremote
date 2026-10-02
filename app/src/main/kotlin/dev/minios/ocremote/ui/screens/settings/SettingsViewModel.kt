@@ -9,9 +9,12 @@ import dev.minios.ocremote.data.repository.LocalServerManager
 import dev.minios.ocremote.data.repository.SettingsRepository
 import dev.minios.ocremote.data.repository.SyncRepository
 import dev.minios.ocremote.data.repository.SyncState
+import dev.minios.ocremote.voice.TtsEngineInfo
 import dev.minios.ocremote.voice.VoiceController
 import dev.minios.ocremote.voice.VoiceControllerService
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -23,6 +26,18 @@ class SettingsViewModel @Inject constructor(
     private val voiceController: VoiceController,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
+
+    /** Installed TTS engines, loaded once via TextToSpeech.getEngines (Ivona-safe). */
+    private val _ttsEngines =
+        MutableStateFlow<List<TtsEngineInfo>>(emptyList())
+    val ttsEngines = _ttsEngines.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            _ttsEngines.value = VoiceController.queryEngines(appContext)
+        }
+    }
+
     val syncState = syncRepository.state.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),

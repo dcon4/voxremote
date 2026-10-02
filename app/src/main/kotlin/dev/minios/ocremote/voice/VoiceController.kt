@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlin.coroutines.resume
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -49,6 +50,9 @@ private const val ANNOUNCE_PREFIX = "voxremote:announce:"
  * - Optional spoken cue before dictation starts (for blind/screen-reader use).
  */
 @Singleton
+/** A text-to-speech engine the user can pick in Settings. */
+data class TtsEngineInfo(val label: String, val packageName: String)
+
 class VoiceController @Inject constructor(
     @ApplicationContext private val context: Context,
     private val settingsRepository: SettingsRepository,
@@ -253,31 +257,45 @@ class VoiceController @Inject constructor(
      */
     fun announceListening(onDone: () -> Unit) {
         scope.launch {
-            val enabled = settingsRepository.voiceAnnounceListening.first()
-            if (!enabled || !ttsReady) {
-                onDone()
-                return@launch
-            }
-            val engine = tts ?: run { onDone(); return@launch }
-            stopSpeaking()
-            val gen = generation.get()
-            val utteranceId = ANNOUNCE_PREFIX + gen
-            synchronized(this) {
-                pendingAnnounceUtterance = utteranceId
-                pendingAnnounceRunnable = {
-                    if (generation.get() == gen) onDone()
+            var delivered = false
+            fun finish() {
+                if (!delivered) {
+                    delivered = true
+                    onDone()
                 }
             }
-            engine.speak(context.getString(R.string.voice_listening), TextToSpeech.QUEUE_FLUSH, null, utteranceId)
-            // Safety net: if onDone never fires (engine stall), start anyway.
-            kotlinx.coroutines.delay(1_500)
-            synchronized(this) {
-                if (pendingAnnounceUtterance == utteranceId) {
-                    pendingAnnounceUtterance = null
-                    val run = pendingAnnounceRunnable
-                    pendingAnnounceRunnable = null
-                    run?.invoke()
+            try {
+                val enabled = settingsRepository.voiceAnnounceListening.first()
+                if (!enabled || !ttsReady) {
+                    finish()
+                    return@launch
                 }
+                val engine = tts ?: run { finish(); return@launch }
+                stopSpeaking()
+                val gen = generation.get()
+                val utteranceId = ANNOUNCE_PREFIX + gen
+                synchronized(this@VoiceController) {
+                    pendingAnnounceUtterance = utteranceId
+                    pendingAnnounceRunnable = {
+                        if (generation.get() == gen) finish()
+                    }
+                }
+                engine.speak(context.getString(R.string.voice_listening), TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+                // Safety net: if onDone never fires (engine stall), start anyway.
+                kotlinx.coroutines.delay(1_500)
+                synchronized(this@VoiceController) {
+                    if (pendingAnnounceUtterance == utteranceId) {
+                        pendingAnnounceUtterance = null
+                        val run = pendingAnnounceRunnable
+                        pendingAnnounceRunnable = null
+                        run?.invoke()
+                    }
+                }
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "Announce cue failed; starting dictation anyway", e)
+            } finally {
+                // Never strand the caller: the mic must always open.
+                finish()
             }
         }
     }
@@ -389,20 +407,57 @@ class VoiceController @Inject constructor(
         private val CODE_SYMBOLS = Regex("[{}\\[\\]<>=~*#|$%^&+\\\\]")
         private val WHITESPACE = Regex("\\s{2,}")
 
-        data class TtsEngineInfo(val label: String, val packageName: String)
-
         /**
          * Every TTS engine installed on this phone (Ivona, Google, Samsung…),
          * so the user can pick their favorite instead of the platform default.
+         *
+         * Uses TextToSpeech.getEngines() — the same API ARYA and
+         * Voice-Only-Email use — because a raw PackageManager query misses
+         * engines like Ivona. Safe to call from the main thread: it suspends
+         * until the engine binds (5s cap) instead of blocking.
          */
-        fun queryEngines(context: Context): List<TtsEngineInfo> {
-            val intent = Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE)
-            return context.packageManager.queryIntentServices(intent, 0).mapNotNull { resolve ->
-                val pkg = resolve.serviceInfo?.packageName ?: return@mapNotNull null
-                val label = resolve.loadLabel(context.packageManager)?.toString()
-                    ?.ifBlank { pkg } ?: pkg
-                TtsEngineInfo(label, pkg)
-            }.distinctBy { it.packageName }.sortedBy { it.label.lowercase() }
+        suspend fun queryEngines(context: Context): List<TtsEngineInfo> {
+            val engines = kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+                awaitEngineList(context)
+            }
+            return engines.orEmpty()
         }
+
+        private suspend fun awaitEngineList(context: Context): List<TtsEngineInfo> =
+            kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                var tts: TextToSpeech? = null
+                val listener = TextToSpeech.OnInitListener { status ->
+                    val result = try {
+                        val list = tts?.engines.orEmpty()
+                        if (list.isNotEmpty()) {
+                            list.map { info ->
+                                TtsEngineInfo(
+                                    label = info.label?.toString()?.ifBlank { info.name } ?: info.name,
+                                    packageName = info.name,
+                                )
+                            }
+                        } else {
+                            // Fall back to at least the default engine (ARYA behavior).
+                            val def = tts?.defaultEngine
+                            if (def != null && status == TextToSpeech.SUCCESS) {
+                                listOf(TtsEngineInfo(def.substringAfterLast('.'), def))
+                            } else {
+                                emptyList()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        AppLogger.w(TAG, "Engine enumeration failed", e)
+                        emptyList()
+                    }
+                    if (cont.isActive) cont.resume(result.sortedBy { it.label.lowercase() })
+                }
+                try {
+                    tts = TextToSpeech(context, listener)
+                } catch (e: Exception) {
+                    AppLogger.w(TAG, "Could not create TTS for engine listing", e)
+                    if (cont.isActive) cont.resume(emptyList())
+                }
+                cont.invokeOnCancellation { tts?.shutdown() }
+            }
     }
 }

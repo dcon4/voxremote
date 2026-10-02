@@ -81,6 +81,8 @@ class SpeechToText(
         partialWords = ""
         lastSpeechAtMs = System.currentTimeMillis()
 
+        AppLogger.i(TAG, "Dictation start requested")
+
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
         ) {
@@ -88,9 +90,16 @@ class SpeechToText(
             return
         }
 
-        val engine = SpeechRecognizer.createSpeechRecognizer(context)
+        val engine = try {
+            SpeechRecognizer.createSpeechRecognizer(context)
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "createSpeechRecognizer failed", e)
+            fail(context.getString(R.string.voice_recognition_failed))
+            return
+        }
         recognizer = engine
         engine.setRecognitionListener(recognitionListener)
+        AppLogger.i(TAG, "Speech recognizer created; opening session")
         beginSession(engine)
         scheduleListenTimeout()
     }
@@ -130,11 +139,10 @@ class SpeechToText(
             // Requested pause window; many engines honor these.
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, pauseMs)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, pauseMs)
-            // Overall session cap; we also enforce it ourselves below.
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, listenMs)
         }
         try {
             engine.startListening(intent)
+            AppLogger.i(TAG, "Listening (listen=${listenMs / 1000}s, pause=${pauseMs / 1000}s)")
             setListening(true)
         } catch (e: Exception) {
             AppLogger.e(TAG, "startListening failed", e)
@@ -200,6 +208,7 @@ class SpeechToText(
 
     private fun fail(message: String) {
         val wasActive = active
+        AppLogger.e(TAG, "Dictation failed: $message")
         teardown()
         if (wasActive) listener.onSpeechError(message)
     }
@@ -221,6 +230,7 @@ class SpeechToText(
 
     private fun onFinalResult(words: String) {
         if (suppressResults) return
+        AppLogger.i(TAG, "Final result (${words.length} chars): ${words.take(60)}")
 
         if (stitchConfirming) {
             handleStitchFinal(words)
@@ -357,6 +367,7 @@ class SpeechToText(
 
         override fun onError(errorCode: Int) {
             if (suppressResults || !active) return
+            AppLogger.w(TAG, "onError code=$errorCode")
             when (errorCode) {
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
                     fail(context.getString(R.string.voice_permission_denied))

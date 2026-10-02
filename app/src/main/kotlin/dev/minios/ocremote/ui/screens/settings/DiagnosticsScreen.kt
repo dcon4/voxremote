@@ -88,49 +88,10 @@ fun DiagnosticsScreen(
         },
     )
 
-    suspend fun exportText(): String {
-        val export = viewModel.export(exportEntryLimit)
-        val exportedEntries = export.entries
-        return buildString {
-        val timeRange = exportedEntries.takeIf { it.isNotEmpty() }?.let {
-            "${java.time.Instant.ofEpochMilli(it.first().timestamp)}..${java.time.Instant.ofEpochMilli(it.last().timestamp)}"
-        } ?: "empty"
-        appendLine("OC Remote diagnostics")
-        appendLine("Generated: ${java.time.Instant.now()}")
-        appendLine("App: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-        appendLine("Android SDK: ${Build.VERSION.SDK_INT}")
-        appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
-        appendLine("Persistent log level: $logLevel")
-        appendLine("Included entries: ${exportedEntries.size} of ${export.totalEntryCount}")
-        appendLine("Time range: $timeRange")
-        appendLine("Dropped queue entries: ${viewModel.droppedEntryCount()}")
-        appendLine("Included: lifecycle, connection, REST/SSE result classes, reducer transitions, updates, and crashes; no chat or terminal payloads")
-        appendLine()
-        append(export.text.ifBlank { context.getString(R.string.diagnostics_empty) })
-        }
-    }
+    suspend fun exportText(): String = viewModel.exportText()
 
     fun shareAsFile() {
-        scope.launch {
-            val text = exportText()
-            val file = withContext(Dispatchers.IO) {
-                val directory = File(context.cacheDir, "diagnostics").apply { mkdirs() }
-                directory.listFiles()?.forEach { it.delete() }
-                File(directory, "oc-remote-diagnostics-${System.currentTimeMillis()}.txt").apply { writeText(text) }
-            }
-            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-            context.startActivity(
-                Intent.createChooser(
-                    Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_STREAM, uri)
-                        clipData = ClipData.newRawUri("OC Remote diagnostics", uri)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    },
-                    context.getString(R.string.diagnostics_share),
-                ),
-            )
-        }
+        viewModel.shareLog()
     }
 
     Scaffold(

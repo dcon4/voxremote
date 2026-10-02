@@ -4,6 +4,7 @@
 
     <!-- Home Screen -->
     <string name="home_title">VoxRemote</string>
+    <string name="home_share_log">Share debug log</string>
     <string name="home_add_server">Add Server</string>
     <string name="home_no_servers">No servers configured</string>
     <string name="home_server_health_good">Connected</string>

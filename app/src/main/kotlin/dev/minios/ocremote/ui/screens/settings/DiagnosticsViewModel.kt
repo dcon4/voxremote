@@ -5,12 +5,15 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.minios.ocremote.data.repository.DiagnosticLogEntry
 import dev.minios.ocremote.data.repository.DiagnosticLogRepository
+import dev.minios.ocremote.debug.DebugLogShare
 import dev.minios.ocremote.logging.AppLogger
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+private const val TAG = "DiagnosticsViewModel"
 
 data class DiagnosticsExport(
     val entries: List<DiagnosticLogEntry>,
@@ -21,6 +24,7 @@ data class DiagnosticsExport(
 @HiltViewModel
 class DiagnosticsViewModel @Inject constructor(
     private val repository: DiagnosticLogRepository,
+    private val debugLogShare: DebugLogShare,
 ) : ViewModel() {
     val entries: StateFlow<List<DiagnosticLogEntry>> = repository.entries.stateIn(
         viewModelScope,
@@ -50,6 +54,17 @@ class DiagnosticsViewModel @Inject constructor(
     }
 
     fun droppedEntryCount(): Long = AppLogger.droppedEntryCount()
+
+    /** Full export text with header — shared with the Home screen log button. */
+    suspend fun exportText(): String = debugLogShare.exportText()
+
+    /** Write the voxremote-named log file and open the share sheet. */
+    fun shareLog() {
+        viewModelScope.launch {
+            runCatching { debugLogShare.share() }
+                .onFailure { AppLogger.e(TAG, "Share log failed", it) }
+        }
+    }
 
     fun clear() {
         viewModelScope.launch { repository.clear() }

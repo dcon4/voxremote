@@ -78,7 +78,7 @@ jobs:
           mkdir -p release-apks
           APK=$(find app/build/outputs/apk/release -name '*.apk' ! -name '*unsigned*' | head -1)
           if [ -n "$APK" ]; then
-            cp "$APK" release-apks/oc-remote-${VERSION}.apk
+            cp "$APK" release-apks/voxremote-${VERSION}.apk
           else
             echo "::error::No APK found in app/build/outputs/apk/release/"
             exit 1
@@ -89,7 +89,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.name }}
           VERSION_CODE: ${{ steps.version.outputs.code }}
         run: |
-          APK="release-apks/oc-remote-${VERSION}.apk"
+          APK="release-apks/voxremote-${VERSION}.apk"
           BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
           "$BUILD_TOOLS/apksigner" verify --verbose "$APK"
 
@@ -97,7 +97,7 @@ jobs:
           APK_PACKAGE=$(printf '%s\n' "$BADGING" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
           APK_VERSION_CODE=$(printf '%s\n' "$BADGING" | sed -n "s/^package: name='[^']*' versionCode='\([^']*\)'.*/\1/p")
           APK_VERSION_NAME=$(printf '%s\n' "$BADGING" | sed -n "s/^package: name='[^']*' versionCode='[^']*' versionName='\([^']*\)'.*/\1/p")
-          test "$APK_PACKAGE" = "dev.minios.ocremote" || { echo "::error::APK package mismatch"; exit 1; }
+          test "$APK_PACKAGE" = "com.dcon4.voxremote" || { echo "::error::APK package mismatch"; exit 1; }
           test "$APK_VERSION_CODE" = "$VERSION_CODE" || { echo "::error::APK versionCode mismatch"; exit 1; }
           test "$APK_VERSION_NAME" = "$VERSION" || { echo "::error::APK versionName mismatch"; exit 1; }
 
@@ -113,7 +113,7 @@ jobs:
               "versionName": version,
               "versionCode": int(os.environ["VERSION_CODE"]),
               "releaseUrl": f"https://github.com/dcon4/voxremote/releases/tag/v{version}",
-              "packageName": "dev.minios.ocremote",
+              "packageName": "com.dcon4.voxremote",
               "apkUrl": f"https://github.com/dcon4/voxremote/releases/download/v{version}/voxremote-{version}.apk",
               "sha256": os.environ["SHA256"],
           }
