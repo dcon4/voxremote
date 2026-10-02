@@ -34,6 +34,9 @@ class SettingsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            // Package scan first so the picker is never empty while the
+            // TTS service query (up to 8s) finishes.
+            _ttsEngines.value = VoiceController.queryEnginesViaPackageManager(appContext)
             _ttsEngines.value = VoiceController.queryEngines(appContext)
         }
     }

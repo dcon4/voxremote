@@ -73,6 +73,13 @@ class SpeechToText(
 
     /** Must be called from the main thread, with RECORD_AUDIO granted. */
     fun start() {
+        // TTS utterance callbacks (which trigger this) can arrive on a
+        // binder thread; the recognizer throws if created anywhere else.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            AppLogger.w(TAG, "start() called off the main thread; re-dispatching")
+            mainHandler.post { start() }
+            return
+        }
         cancelTimers()
         resetStitch()
         active = true

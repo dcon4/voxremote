@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.coroutines.resume
+import android.os.Handler
+import android.os.Looper
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -59,6 +61,7 @@ class VoiceController @Inject constructor(
 ) {
     private val prefs = context.getSharedPreferences(VOICE_STATE_PREFS, Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -93,6 +96,11 @@ class VoiceController @Inject constructor(
     init {
         scope.launch {
             val preferred = settingsRepository.voiceTtsEngine.first()
+            AppLogger.i(
+                TAG,
+                "VoiceController init: saved engine preference=" +
+                    "'${preferred.ifBlank { "system default" }}'",
+            )
             createTts(preferred)
         }
     }
@@ -166,6 +174,11 @@ class VoiceController @Inject constructor(
 
     /** Switch engines at runtime (called when the user picks one in Settings). */
     fun applyEngine(enginePackage: String) {
+        AppLogger.i(
+            TAG,
+            "applyEngine(requested='${enginePackage.ifBlank { "system default" }}', " +
+                "current='${currentEnginePackage.ifBlank { "system default" }}', ready=$ttsReady)",
+        )
         if (enginePackage == currentEnginePackage && ttsReady) return
         stopSpeaking()
         createTts(enginePackage)
@@ -259,9 +272,18 @@ class VoiceController @Inject constructor(
         scope.launch {
             var delivered = false
             fun finish() {
-                if (!delivered) {
-                    delivered = true
-                    onDone()
+                // Utterance callbacks can arrive on a binder thread; the
+                // caller (mic start) must always run on the main thread.
+                mainHandler.post {
+                    val shouldRun = synchronized(this@VoiceController) {
+                        if (delivered) {
+                            false
+                        } else {
+                            delivered = true
+                            true
+                        }
+                    }
+                    if (shouldRun) onDone()
                 }
             }
             try {
@@ -417,10 +439,40 @@ class VoiceController @Inject constructor(
          * until the engine binds (5s cap) instead of blocking.
          */
         suspend fun queryEngines(context: Context): List<TtsEngineInfo> {
-            val engines = kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+            val fromTts = kotlinx.coroutines.withTimeoutOrNull(8_000L) {
                 awaitEngineList(context)
             }
-            return engines.orEmpty()
+            if (fromTts.isNullOrEmpty()) {
+                AppLogger.w(TAG, "TTS service engine query empty or timed out; using package scan only")
+            }
+            val merged = ((fromTts ?: emptyList()) + queryEnginesViaPackageManager(context))
+                .distinctBy { it.packageName }
+                .sortedBy { it.label.lowercase() }
+            AppLogger.i(
+                TAG,
+                "TTS engines available (${merged.size}): " +
+                    merged.joinToString { it.packageName },
+            )
+            return merged
+        }
+
+        /**
+         * PackageManager fallback: catches engines the TTS service omits
+         * from getEngines() (and vice versa when merged).
+         */
+        fun queryEnginesViaPackageManager(context: Context): List<TtsEngineInfo> {
+            val intent = Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE)
+            return try {
+                context.packageManager.queryIntentServices(intent, 0).mapNotNull { resolve ->
+                    val pkg = resolve.serviceInfo?.packageName ?: return@mapNotNull null
+                    val label = resolve.loadLabel(context.packageManager)?.toString()
+                        ?.ifBlank { pkg } ?: pkg
+                    TtsEngineInfo(label, pkg)
+                }.distinctBy { it.packageName }.sortedBy { it.label.lowercase() }
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "Package scan for TTS engines failed", e)
+                emptyList()
+            }
         }
 
         private suspend fun awaitEngineList(context: Context): List<TtsEngineInfo> =

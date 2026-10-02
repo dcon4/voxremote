@@ -79,7 +79,7 @@ class DebugLogShare @Inject constructor(
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 },
                 from.getString(R.string.diagnostics_share),
-            ),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
     }
 }
