@@ -438,14 +438,27 @@ class VoiceController @Inject constructor(
          * engines like Ivona. Safe to call from the main thread: it suspends
          * until the engine binds (5s cap) instead of blocking.
          */
-        suspend fun queryEngines(context: Context): List<TtsEngineInfo> {
+        suspend fun queryEngines(
+            context: Context,
+            preferredEngine: String? = null,
+        ): List<TtsEngineInfo> {
             val fromTts = kotlinx.coroutines.withTimeoutOrNull(8_000L) {
-                awaitEngineList(context)
+                awaitEngineList(context, preferredEngine)
             }
             if (fromTts.isNullOrEmpty()) {
                 AppLogger.w(TAG, "TTS service engine query empty or timed out; using package scan only")
             }
-            val merged = ((fromTts ?: emptyList()) + queryEnginesViaPackageManager(context))
+            val fromPm = queryEnginesViaPackageManager(context)
+            AppLogger.i(
+                TAG,
+                "Engine query: TTS service -> " +
+                    fromTts.orEmpty().joinToString { it.packageName },
+            )
+            AppLogger.i(
+                TAG,
+                "Engine query: package scan -> " + fromPm.joinToString { it.packageName },
+            )
+            val merged = ((fromTts ?: emptyList()) + fromPm)
                 .distinctBy { it.packageName }
                 .sortedBy { it.label.lowercase() }
             AppLogger.i(
@@ -475,7 +488,10 @@ class VoiceController @Inject constructor(
             }
         }
 
-        private suspend fun awaitEngineList(context: Context): List<TtsEngineInfo> =
+        private suspend fun awaitEngineList(
+            context: Context,
+            preferredEngine: String? = null,
+        ): List<TtsEngineInfo> =
             kotlinx.coroutines.suspendCancellableCoroutine { cont ->
                 var tts: TextToSpeech? = null
                 val listener = TextToSpeech.OnInitListener { status ->
@@ -504,7 +520,14 @@ class VoiceController @Inject constructor(
                     if (cont.isActive) cont.resume(result.sortedBy { it.label.lowercase() })
                 }
                 try {
-                    tts = TextToSpeech(context, listener)
+                    // Bind to the engine the user already chose when possible:
+                    // each engine's getEngines() reports the list its own service
+                    // knows about, which is how Voice-Only-Email surfaces Ivona.
+                    tts = if (preferredEngine.isNullOrBlank()) {
+                        TextToSpeech(context, listener)
+                    } else {
+                        TextToSpeech(context, listener, preferredEngine)
+                    }
                 } catch (e: Exception) {
                     AppLogger.w(TAG, "Could not create TTS for engine listing", e)
                     if (cont.isActive) cont.resume(emptyList())
