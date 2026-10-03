@@ -237,14 +237,35 @@ class VoiceController @Inject constructor(
         speakCleaned(cleaned)
     }
 
-    /** Speak the last remembered assistant reply, or a short cue if none. */
+    /** Speak the reply the user is currently viewing, else the last remembered reply. */
     fun speakLastReply() {
-        val stored = prefs.getString(KEY_LAST_REPLY, null)
+        val viewed = viewedReply
+        val stored = viewed ?: prefs.getString(KEY_LAST_REPLY, null)
         if (stored.isNullOrBlank()) {
             speakCleaned(context.getString(R.string.voice_no_reply))
             return
         }
+        AppLogger.i(
+            TAG,
+            "Read reply: speaking ${if (viewed != null) "viewed" else "stored latest"} reply (${stored.length} chars)",
+        )
         speak(stored)
+    }
+
+    @Volatile
+    private var viewedReply: String? = null
+
+    /**
+     * Remember the reply the user is most likely viewing (the assistant turn
+     * nearest the viewport center). The notification/RemoteFix "Read reply"
+     * action speaks this instead of the latest reply; the scroll tracker in
+     * ChatScreen keeps it fresh, so older replies and other chats work too.
+     */
+    fun setViewedReply(text: String?) {
+        val clean = text?.takeIf { it.isNotBlank() }
+        if (clean == viewedReply) return
+        viewedReply = clean
+        AppLogger.i(TAG, "Viewed reply updated: ${clean?.length ?: 0} chars")
     }
 
     private fun speakCleaned(cleaned: String) {

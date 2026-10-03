@@ -738,6 +738,17 @@ class ChatViewModel @Inject constructor(
             .orEmpty()
     }
 
+    /** Remember the reply the user is currently viewing (scroll tracker). */
+    fun setViewedReply(text: String?) {
+        voiceController.setViewedReply(text)
+    }
+
+    /** Speak a specific reply via the per-reply speaker button. */
+    fun speakReplyText(text: String) {
+        if (text.isBlank()) return
+        voiceController.speak(text)
+    }
+
     private suspend fun reconcileActiveStatus() {
         val localStatus = eventReducer.sessionStatuses.value[sessionId]
         val hasRunningTool = eventReducer.messages.value[sessionId].orEmpty().any { message ->

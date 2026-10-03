@@ -2863,6 +2863,38 @@ fun ChatScreen(
                 else -> {
                     val messageSpacing = if (LocalCompactMessages.current) 4.dp else 12.dp
                     val chatTurns = remember(uiState.messages) { groupChatTurns(uiState.messages) }
+                    // Track which reply is most prominent on screen so the
+                    // notification/RemoteFix "Read reply" action speaks what the
+                    // user is actually viewing (falls back to latest reply).
+                    val turnTextByKey = remember(chatTurns) {
+                        chatTurns.filterNot { it.isUser }.associate { turn ->
+                            turn.key to turn.messages.flatMap { it.parts }
+                                .filterIsInstance<Part.Text>()
+                                .joinToString("\n") { it.text }
+                        }
+                    }
+                    LaunchedEffect(listState, turnTextByKey) {
+                        snapshotFlow { listState.layoutInfo.visibleItemsInfo }
+                            .collect { infos ->
+                                if (infos.isEmpty()) return@collect
+                                val layout = listState.layoutInfo
+                                val center = (layout.viewportStartOffset + layout.viewportEndOffset) / 2
+                                var bestKey: String? = null
+                                var bestDist = Int.MAX_VALUE
+                                for (info in infos) {
+                                    val key = info.key
+                                    if (key !is String || !turnTextByKey.containsKey(key)) continue
+                                    val dist = abs(info.offset + info.size / 2 - center)
+                                    if (dist < bestDist) {
+                                        bestDist = dist
+                                        bestKey = key
+                                    }
+                                }
+                                if (bestKey != null) {
+                                    viewModel.setViewedReply(turnTextByKey[bestKey])
+                                }
+                            }
+                    }
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
@@ -2999,7 +3031,15 @@ fun ChatScreen(
                                             snackbarHostState.showSnackbar(context.getString(R.string.chat_copied_clipboard))
                                         }
                                     }
-                                }
+                                },
+                                onSpeak = if (chatMessage.isUser) null else {
+                                    {
+                                        val replyText = chatTurn.messages.flatMap { it.parts }
+                                            .filterIsInstance<Part.Text>()
+                                            .joinToString("\n") { it.text }
+                                        viewModel.speakReplyText(replyText)
+                                    }
+                                },
                             )
                         }
 
@@ -4727,6 +4767,7 @@ private fun ChatMessageBubble(
     chatMessages: List<ChatMessage>,
     onRevert: (() -> Unit)? = null,
     onCopyText: (() -> Unit)? = null,
+    onSpeak: (() -> Unit)? = null,
     onNavigateToChildSession: (String) -> Unit = {},
 ) {
     val chatMessage = chatMessages.last()
@@ -5003,6 +5044,7 @@ private fun ChatMessageBubble(
                             { showRevertConfirmation = true }
                         } else null,
                         onCopyText = onCopyText,
+                        onSpeak = onSpeak,
                     )
                 }
             }
@@ -5024,6 +5066,7 @@ private fun MessageMetadataRow(
     delivery: MessageDelivery?,
     onRevert: (() -> Unit)?,
     onCopyText: (() -> Unit)?,
+    onSpeak: (() -> Unit)? = null,
 ) {
     val hapticView = LocalView.current
     val hapticOn = LocalHapticFeedbackEnabled.current
@@ -5111,6 +5154,23 @@ private fun MessageMetadataRow(
                     contentDescription = stringResource(R.string.chat_revert),
                     modifier = Modifier.size(13.dp),
                     tint = textColor.copy(alpha = 0.58f),
+                )
+            }
+        }
+        if (onSpeak != null) {
+            Spacer(Modifier.width(3.dp))
+            Box(
+                modifier = Modifier
+                    .size(20.dp)
+                    .semantics { role = Role.Button }
+                    .clickable { performHaptic(hapticView, hapticOn); onSpeak() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Lucide.Volume2,
+                    contentDescription = stringResource(R.string.voice_action_read),
+                    modifier = Modifier.size(13.dp),
+                    tint = textColor.copy(alpha = 0.42f),
                 )
             }
         }
