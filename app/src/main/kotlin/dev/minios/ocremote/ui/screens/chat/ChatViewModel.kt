@@ -255,6 +255,14 @@ class ChatViewModel @Inject constructor(
     fun clearStartMic() {
         savedStateHandle["startMic"] = false
     }
+
+    init {
+        android.util.Log.i(
+            "ChatViewModel",
+            "ChatViewModel init: vcId=${System.identityHashCode(voiceController)} " +
+                "handleId=${System.identityHashCode(savedStateHandle)}",
+        )
+    }
     private val username: String = savedStateHandle.get<String>("username").orEmpty()
     private val password: String = savedStateHandle.get<String>("password").orEmpty()
     val serverName: String = savedStateHandle.get<String>("serverName").orEmpty()

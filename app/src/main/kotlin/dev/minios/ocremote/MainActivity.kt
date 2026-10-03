@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import dev.minios.ocremote.logging.AppLogger as Log
 import android.view.KeyEvent
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -300,6 +301,18 @@ class MainActivity : ComponentActivity() {
      */
     private fun handleMicIntent(intent: Intent?) {
         if (intent?.action != ACTION_START_MIC) return
+        // The mic hand-off is consumed by ChatScreen's composition. With the
+        // screen off, Compose never draws the chat, so wake and show over the
+        // lock screen before navigating — otherwise nothing can receive it.
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD,
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            getSystemService(android.app.KeyguardManager::class.java)
+                ?.requestDismissKeyguard(this, null)
+        }
         lifecycleScope.launch {
             val last = voiceController.lastSession()
             if (last == null) {

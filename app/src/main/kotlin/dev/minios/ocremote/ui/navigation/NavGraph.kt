@@ -374,10 +374,17 @@ fun NavGraph(
                     // notifies synchronously on the main thread — unlike a flow
                     // collector, it cannot stall behind a paused composition.
                     if (deepLink.startMic) {
-                        navController.currentBackStackEntry
-                            ?.savedStateHandle
-                            ?.set("startMic", true)
-                        Log.i(TAG, "Mic request stored on chat back stack entry")
+                        val entry = navController.currentBackStackEntry
+                        if (entry == null) {
+                            Log.w(TAG, "Mic request store FAILED: no current back stack entry")
+                        } else {
+                            entry.savedStateHandle.set("startMic", true)
+                            Log.i(
+                                TAG,
+                                "Mic request stored on entry route=${entry.destination.route} " +
+                                    "handleId=${System.identityHashCode(entry.savedStateHandle)}",
+                            )
+                        }
                     }
                 } else {
                     // No specific session — open session list (placeholder; the

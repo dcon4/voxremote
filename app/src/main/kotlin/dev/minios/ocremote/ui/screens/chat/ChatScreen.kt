@@ -1804,6 +1804,7 @@ fun ChatScreen(
     // the flow's collector is stalled behind a paused frame clock (screen off).
     DisposableEffect(Unit) {
         val startMicFlag = viewModel.startMicFlag
+        Log.i("ChatScreen", "Mic observer registered value=${startMicFlag.value}")
         val observer = androidx.lifecycle.Observer<Boolean> { value ->
             if (value == true) {
                 Log.i("ChatScreen", "Mic trigger received via saved state")

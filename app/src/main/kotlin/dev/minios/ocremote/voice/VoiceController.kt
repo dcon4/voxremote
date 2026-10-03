@@ -51,10 +51,10 @@ private const val ANNOUNCE_PREFIX = "voxremote:announce:"
  *   can jump straight back into that chat.
  * - Optional spoken cue before dictation starts (for blind/screen-reader use).
  */
-@Singleton
 /** A text-to-speech engine the user can pick in Settings. */
 data class TtsEngineInfo(val label: String, val packageName: String)
 
+@Singleton
 class VoiceController @Inject constructor(
     @ApplicationContext private val context: Context,
     private val settingsRepository: SettingsRepository,
