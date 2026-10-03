@@ -230,7 +230,7 @@ private fun PendingPromptRecord.toLocalParts(): List<Part> =
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
-    savedStateHandle: SavedStateHandle,
+    private val savedStateHandle: SavedStateHandle,
     private val eventReducer: EventReducer,
     private val api: OpenCodeApi,
     private val draftRepository: DraftRepository,
@@ -244,6 +244,17 @@ class ChatViewModel @Inject constructor(
     private var sessionPromptable = false
 
     private val serverUrl: String = savedStateHandle.get<String>("serverUrl").orEmpty()
+
+    /**
+     * Notification "Listen" request parked by NavGraph on this entry's
+     * SavedStateHandle. Observed from ChatScreen; delivered synchronously
+     * on the main thread, so it survives composition/dispatcher stalls.
+     */
+    val startMicFlag = savedStateHandle.getLiveData<Boolean>("startMic")
+
+    fun clearStartMic() {
+        savedStateHandle["startMic"] = false
+    }
     private val username: String = savedStateHandle.get<String>("username").orEmpty()
     private val password: String = savedStateHandle.get<String>("password").orEmpty()
     val serverName: String = savedStateHandle.get<String>("serverName").orEmpty()

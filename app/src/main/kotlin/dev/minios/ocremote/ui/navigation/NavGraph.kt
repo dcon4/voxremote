@@ -368,6 +368,17 @@ fun NavGraph(
                     } else {
                         navController.navigate(route) { launchSingleTop = true }
                     }
+
+                    // Notification "Listen": park the request on the chat entry's
+                    // SavedStateHandle. ChatScreen observes it with LiveData, which
+                    // notifies synchronously on the main thread — unlike a flow
+                    // collector, it cannot stall behind a paused composition.
+                    if (deepLink.startMic) {
+                        navController.currentBackStackEntry
+                            ?.savedStateHandle
+                            ?.set("startMic", true)
+                        Log.i(TAG, "Mic request stored on chat back stack entry")
+                    }
                 } else {
                     // No specific session — open session list (placeholder; the
                     // user can also just stay on Home if preferred)

@@ -66,7 +66,8 @@ data class SessionDeepLink(
     val password: String,
     val serverName: String,
     val sessionPath: String,  // e.g. /L2hvbWUv.../session/abc123
-    val sessionId: String = "" // raw session ID (fallback when sessionPath is empty)
+    val sessionId: String = "", // raw session ID (fallback when sessionPath is empty)
+    val startMic: Boolean = false // notification "Listen": open mic on arrival
 )
 
 /**
@@ -310,7 +311,11 @@ class MainActivity : ComponentActivity() {
                 Log.w(TAG, "Mic trigger ignored: server ${last.serverId} not configured")
                 return@launch
             }
-            Log.i(TAG, "Mic trigger → session ${last.sessionId} on ${server.displayName}")
+            Log.i(
+                TAG,
+                "Mic trigger → session ${last.sessionId} on ${server.displayName} " +
+                    "vcId=${System.identityHashCode(voiceController)}",
+            )
             _deepLinkFlow.emit(
                 SessionDeepLink(
                     serverId = server.id,
@@ -320,6 +325,7 @@ class MainActivity : ComponentActivity() {
                     serverName = server.displayName,
                     sessionPath = "",
                     sessionId = last.sessionId,
+                    startMic = true,
                 )
             )
             voiceController.requestMicStart()

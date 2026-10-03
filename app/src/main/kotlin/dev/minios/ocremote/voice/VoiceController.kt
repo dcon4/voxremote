@@ -86,7 +86,12 @@ class VoiceController @Inject constructor(
     val micTrigger: SharedFlow<Unit> = _micTrigger.asSharedFlow()
 
     fun requestMicStart() {
-        _micTrigger.tryEmit(Unit)
+        val accepted = _micTrigger.tryEmit(Unit)
+        AppLogger.i(
+            TAG,
+            "Mic trigger requested: vcId=${System.identityHashCode(this)} " +
+                "accepted=$accepted subscribers=${_micTrigger.subscriptionCount.value}",
+        )
     }
 
     fun consumeMicTrigger() {
@@ -94,12 +99,13 @@ class VoiceController @Inject constructor(
     }
 
     init {
+        val instanceId = System.identityHashCode(this)
         scope.launch {
             val preferred = settingsRepository.voiceTtsEngine.first()
             AppLogger.i(
                 TAG,
                 "VoiceController init: saved engine preference=" +
-                    "'${preferred.ifBlank { "system default" }}'",
+                    "'${preferred.ifBlank { "system default" }}' id=$instanceId",
             )
             createTts(preferred)
         }

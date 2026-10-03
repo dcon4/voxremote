@@ -1793,9 +1793,26 @@ fun ChatScreen(
     // Notification "Listen" action (replay=1 so a cold start is not lost).
     LaunchedEffect(Unit) {
         viewModel.micTrigger.collect {
+            Log.i("ChatScreen", "Mic trigger collected via flow")
             viewModel.consumeMicTrigger()
             startDictation()
         }
+    }
+
+    // Second hand-off path: the request arrives through SavedStateHandle as
+    // LiveData, which notifies on the caller's thread. This works even when
+    // the flow's collector is stalled behind a paused frame clock (screen off).
+    DisposableEffect(Unit) {
+        val startMicFlag = viewModel.startMicFlag
+        val observer = androidx.lifecycle.Observer<Boolean> { value ->
+            if (value == true) {
+                Log.i("ChatScreen", "Mic trigger received via saved state")
+                viewModel.clearStartMic()
+                startDictation()
+            }
+        }
+        startMicFlag.observeForever(observer)
+        onDispose { startMicFlag.removeObserver(observer) }
     }
 
     DisposableEffect(Unit) {
