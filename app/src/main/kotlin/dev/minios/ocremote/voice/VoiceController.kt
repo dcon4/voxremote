@@ -2,6 +2,7 @@ package dev.minios.ocremote.voice
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -62,6 +63,7 @@ class VoiceController @Inject constructor(
     private val prefs = context.getSharedPreferences(VOICE_STATE_PREFS, Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val audioManager: AudioManager? = context.getSystemService(AudioManager::class.java)
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -227,6 +229,7 @@ class VoiceController @Inject constructor(
     fun stopSpeaking() {
         generation.incrementAndGet()
         _speaking.value = false
+        mainHandler.removeCallbacks(callWatch)
         tts?.stop()
     }
 
@@ -268,7 +271,33 @@ class VoiceController @Inject constructor(
         AppLogger.i(TAG, "Viewed reply updated: ${clean?.length ?: 0} chars")
     }
 
+    /**
+     * True while a cellular or VoIP conversation owns the audio path.
+     * AudioManager.getMode() needs no permission.
+     */
+    private fun callActive(): Boolean {
+        val mode = audioManager?.mode ?: AudioManager.MODE_NORMAL
+        return mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_IN_COMMUNICATION
+    }
+
+    /** While speech is running, stop it the moment a phone call starts. */
+    private val callWatch = object : Runnable {
+        override fun run() {
+            if (!_speaking.value) return
+            if (callActive()) {
+                AppLogger.i(TAG, "Phone call started; stopping TTS")
+                stopSpeaking()
+                return
+            }
+            mainHandler.postDelayed(this, 1_000L)
+        }
+    }
+
     private fun speakCleaned(cleaned: String) {
+        if (callActive()) {
+            AppLogger.i(TAG, "Phone call active; speech suppressed")
+            return
+        }
         val engine = tts
         if (engine == null || !ttsReady) {
             AppLogger.w(TAG, "TTS not ready yet; speech dropped")
@@ -278,6 +307,8 @@ class VoiceController @Inject constructor(
         val gen = generation.incrementAndGet()
         val chunks = splitForSpeech(cleaned, MAX_TTS_CHUNK)
         _speaking.value = true
+        mainHandler.removeCallbacks(callWatch)
+        mainHandler.postDelayed(callWatch, 1_000L)
         synchronized(this) {
             chunks.forEachIndexed { index, chunk ->
                 val marker = if (index == chunks.lastIndex) LAST_CHUNK_MARKER else "$index"
@@ -314,6 +345,11 @@ class VoiceController @Inject constructor(
                 }
             }
             try {
+                if (callActive()) {
+                    AppLogger.i(TAG, "Phone call active; listening cue suppressed")
+                    finish()
+                    return@launch
+                }
                 val enabled = settingsRepository.voiceAnnounceListening.first()
                 if (!enabled || !ttsReady) {
                     finish()
