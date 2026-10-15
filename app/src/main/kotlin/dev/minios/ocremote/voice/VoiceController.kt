@@ -2,6 +2,8 @@ package dev.minios.ocremote.voice
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -111,6 +113,12 @@ class VoiceController @Inject constructor(
             )
             createTts(preferred)
         }
+        scope.launch {
+            settingsRepository.voicePauseOtherAudio.collect { enabled ->
+                pauseOtherAudioEnabled = enabled
+                AppLogger.i(TAG, "Pause-other-audio setting: $enabled")
+            }
+        }
     }
 
     /**
@@ -215,6 +223,7 @@ class VoiceController @Inject constructor(
                 val utteranceGen = parts[1].toIntOrNull() ?: return
                 if (utteranceGen == generation.get() && parts[2] == LAST_CHUNK_MARKER) {
                     _speaking.value = false
+                    mainHandler.post { abandonSpeechFocus() }
                 }
             }
         }
@@ -230,6 +239,7 @@ class VoiceController @Inject constructor(
         generation.incrementAndGet()
         _speaking.value = false
         mainHandler.removeCallbacks(callWatch)
+        abandonSpeechFocus()
         tts?.stop()
     }
 
@@ -293,6 +303,60 @@ class VoiceController @Inject constructor(
         }
     }
 
+    /** When true, reply speech briefly pauses other audio apps via focus. */
+    @Volatile
+    private var pauseOtherAudioEnabled: Boolean = true
+
+    private var audioFocusHeld: Boolean = false
+
+    private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                if (_speaking.value) {
+                    AppLogger.i(TAG, "Audio focus lost; stopping TTS")
+                    stopSpeaking()
+                }
+            }
+        }
+    }
+
+    private val audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+        .setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build(),
+        )
+        .setWillPauseWhenDucked(true)
+        .setOnAudioFocusChangeListener(focusChangeListener)
+        .build()
+
+    /**
+     * Ask Android for temporary ownership of the audio path so music and
+     * other TTS apps pause for the reply and resume when it ends. Skipped
+     * when the setting is off or a phone call is in progress; a call
+     * starting mid-speech is caught by [callWatch] and the focus listener.
+     */
+    private fun requestSpeechFocus() {
+        if (!pauseOtherAudioEnabled) return
+        if (callActive()) return
+        val am = audioManager ?: return
+        val result = am.requestAudioFocus(audioFocusRequest)
+        audioFocusHeld = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        AppLogger.i(
+            TAG,
+            "Audio focus requested: granted=$audioFocusHeld pauseOtherAudio=$pauseOtherAudioEnabled",
+        )
+    }
+
+    private fun abandonSpeechFocus() {
+        if (!audioFocusHeld) return
+        audioFocusHeld = false
+        audioManager?.abandonAudioFocusRequest(audioFocusRequest)
+        AppLogger.i(TAG, "Audio focus abandoned")
+    }
+
     private fun speakCleaned(cleaned: String) {
         if (callActive()) {
             AppLogger.i(TAG, "Phone call active; speech suppressed")
@@ -304,6 +368,7 @@ class VoiceController @Inject constructor(
             return
         }
         stopSpeaking()
+        requestSpeechFocus()
         val gen = generation.incrementAndGet()
         val chunks = splitForSpeech(cleaned, MAX_TTS_CHUNK)
         _speaking.value = true

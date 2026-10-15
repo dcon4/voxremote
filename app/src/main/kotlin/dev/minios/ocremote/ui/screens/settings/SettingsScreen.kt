@@ -98,6 +98,7 @@ fun SettingsScreen(
     val voiceReadReplies by viewModel.voiceReadReplies.collectAsState()
     val voiceNotification by viewModel.voiceNotification.collectAsState()
     val voiceAnnounceListening by viewModel.voiceAnnounceListening.collectAsState()
+    val voicePauseOtherAudio by viewModel.voicePauseOtherAudio.collectAsState()
     val voiceListenSeconds by viewModel.voiceListenSeconds.collectAsState()
     val voicePauseSeconds by viewModel.voicePauseSeconds.collectAsState()
     val voiceTtsEngine by viewModel.voiceTtsEngine.collectAsState()
@@ -670,6 +671,20 @@ fun SettingsScreen(
                     )
                 },
                 modifier = Modifier.clickable { viewModel.setVoiceAnnounceListening(!voiceAnnounceListening) }
+            )
+
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_voice_pause_other)) },
+                supportingContent = { Text(stringResource(R.string.settings_voice_pause_other_desc)) },
+                leadingContent = { Icon(Lucide.Music, contentDescription = null) },
+                trailingContent = {
+                    Switch(
+                        checked = voicePauseOtherAudio,
+                        onCheckedChange = { viewModel.setVoicePauseOtherAudio(it) },
+                        colors = switchColors
+                    )
+                },
+                modifier = Modifier.clickable { viewModel.setVoicePauseOtherAudio(!voicePauseOtherAudio) }
             )
 
             ListItem(

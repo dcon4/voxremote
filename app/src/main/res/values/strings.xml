@@ -693,6 +693,8 @@ Tokens: ~%4$d -&gt; ~%5$d</string>
     <string name="settings_voice_read_replies_desc">Speak the assistant reply when it finishes</string>
     <string name="settings_voice_announce">Say Listening before mic</string>
     <string name="settings_voice_announce_desc">Speak a short cue when dictation starts</string>
+    <string name="settings_voice_pause_other">Pause other audio</string>
+    <string name="settings_voice_pause_other_desc">Pause music and other apps while a reply is spoken; they resume when it finishes. Never interrupts a phone call.</string>
     <string name="settings_voice_listen_for">Listen for</string>
     <string name="settings_voice_listen_for_desc">Seconds to keep listening before pausing: %1$d seconds</string>
     <string name="settings_voice_pause_for">Pause for</string>

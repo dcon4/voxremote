@@ -328,6 +328,12 @@ class SettingsViewModel @Inject constructor(
         initialValue = true
     )
 
+    val voicePauseOtherAudio = settingsRepository.voicePauseOtherAudio.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = true
+    )
+
     val voiceListenSeconds = settingsRepository.voiceListenSeconds.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -366,6 +372,12 @@ class SettingsViewModel @Inject constructor(
     fun setVoiceAnnounceListening(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.setVoiceAnnounceListening(enabled)
+        }
+    }
+
+    fun setVoicePauseOtherAudio(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setVoicePauseOtherAudio(enabled)
         }
     }
 

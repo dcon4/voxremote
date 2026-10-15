@@ -88,6 +88,7 @@ class SettingsRepository @Inject constructor(
         private val VOICE_READ_REPLIES_KEY = booleanPreferencesKey("voice_read_replies")
         private val VOICE_NOTIFICATION_KEY = booleanPreferencesKey("voice_notification")
         private val VOICE_ANNOUNCE_LISTENING_KEY = booleanPreferencesKey("voice_announce_listening")
+        private val VOICE_PAUSE_OTHER_AUDIO_KEY = booleanPreferencesKey("voice_pause_other_audio")
         private val VOICE_LISTEN_SECONDS_KEY = intPreferencesKey("voice_listen_seconds")
         private val VOICE_PAUSE_SECONDS_KEY = intPreferencesKey("voice_pause_seconds")
         private val VOICE_TTS_ENGINE_KEY = stringPreferencesKey("voice_tts_engine")
@@ -394,6 +395,19 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setVoiceAnnounceListening(enabled: Boolean) {
         dataStore.edit { preferences -> preferences[VOICE_ANNOUNCE_LISTENING_KEY] = enabled }
+    }
+
+    /**
+     * Whether speaking a reply transiently takes audio focus so music and
+     * other TTS apps pause, resuming when speech ends. Never requested
+     * during a phone call. Default: true.
+     */
+    val voicePauseOtherAudio: Flow<Boolean> = dataStore.data.map { preferences ->
+        preferences[VOICE_PAUSE_OTHER_AUDIO_KEY] ?: true
+    }
+
+    suspend fun setVoicePauseOtherAudio(enabled: Boolean) {
+        dataStore.edit { preferences -> preferences[VOICE_PAUSE_OTHER_AUDIO_KEY] = enabled }
     }
 
     /** Maximum length of one dictation session, in seconds. Default: 60. */
