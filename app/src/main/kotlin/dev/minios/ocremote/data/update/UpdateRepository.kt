@@ -64,32 +64,56 @@ class UpdateRepository @Inject constructor(
     suspend fun restore() = operationMutex.withLock {
         if (_state.value is UpdateState.Downloading || _state.value is UpdateState.ReadyToInstall) return@withLock
         val preferences = dataStore.data.first()
-        decodeCachedRelease(preferences[CACHED_RELEASE_KEY])
+        val cached = decodeCachedRelease(preferences[CACHED_RELEASE_KEY])
             ?.takeIf { UpdatePolicy.isNewer(it, BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME) }
-            ?.let { _state.value = UpdateState.Available(it) }
+        Log.i(
+            TAG,
+            "restore: cached=${cached?.let { "${it.versionName}(${it.versionCode})" } ?: "none"} " +
+                "installed=${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE})",
+        )
+        cached?.let { _state.value = UpdateState.Available(it) }
     }
 
     suspend fun check(manual: Boolean) = operationMutex.withLock {
         if (_state.value is UpdateState.Downloading || _state.value is UpdateState.ReadyToInstall) return@withLock
         val preferences = dataStore.data.first()
         val now = System.currentTimeMillis()
-        if (!manual && now - (preferences[LAST_ATTEMPT_KEY] ?: 0L) < CHECK_INTERVAL_MS) return
+        val lastAttempt = preferences[LAST_ATTEMPT_KEY] ?: 0L
+        if (!manual && now - lastAttempt < CHECK_INTERVAL_MS) {
+            Log.i(TAG, "check: skipped (auto, last attempt ${now - lastAttempt}ms ago)")
+            return
+        }
         val cachedAvailable = _state.value as? UpdateState.Available
         if (manual || cachedAvailable == null) _state.value = UpdateState.Checking
         dataStore.edit { it[LAST_ATTEMPT_KEY] = now }
+        Log.i(
+            TAG,
+            "check: manual=$manual installed=${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE}) " +
+                "cachedAvailable=${cachedAvailable?.let { "${it.release.versionName}(${it.release.versionCode})" } ?: "none"}",
+        )
 
-        val release = runCatching { fetchManifest(RICH_UPDATE_MANIFEST_URL) }.getOrNull()
-            ?: runCatching { fetchManifest(UPDATE_MANIFEST_URL) }.getOrNull()
-            ?: runCatching { fetchLatestGitHubRelease() }.getOrElse {
-                _state.value = cachedAvailable ?: if (manual) {
-                    UpdateState.Error("Unable to check for updates")
-                } else {
-                    UpdateState.Idle
+        val release = runCatching { fetchManifest(RICH_UPDATE_MANIFEST_URL) }
+            .onFailure { Log.i(TAG, "check: rich manifest -> ${it.message}") }
+            .getOrNull()
+            ?: runCatching { fetchManifest(UPDATE_MANIFEST_URL) }
+                .onFailure { Log.w(TAG, "check: raw manifest -> ${it.message}") }
+                .getOrNull()
+            ?: runCatching { fetchLatestGitHubRelease() }
+                .onFailure { Log.i(TAG, "check: github release -> ${it.message}") }
+                .getOrElse {
+                    val next = cachedAvailable ?: if (manual) {
+                        UpdateState.Error("Unable to check for updates")
+                    } else {
+                        UpdateState.Idle
+                    }
+                    Log.w(TAG, "check: all sources failed -> ${next::class.simpleName}")
+                    _state.value = next
+                    return
                 }
-                return
-            }
 
-        if (UpdatePolicy.isNewer(release, BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME)) {
+        val newer = UpdatePolicy.isNewer(release, BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME)
+        Log.i(TAG, "check: fetched=${release.versionName}(${release.versionCode}) newer=$newer")
+        if (newer) {
             dataStore.edit { it[CACHED_RELEASE_KEY] = json.encodeToString(AvailableUpdate.serializer(), release) }
             _state.value = UpdateState.Available(release)
         } else {

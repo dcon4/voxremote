@@ -94,6 +94,7 @@
     <string name="home_local_error_not_installed">Local runtime is not installed yet. Tap Setup to install it.</string>
     <string name="home_local_error_launch_failed">Failed to launch Termux command.</string>
     <string name="update_available_title">Update available</string>
+    <string name="update_check_failed_title">Update check failed</string>
     <string name="update_available_message">Version %1$s is ready.</string>
     <string name="update_open_release">View release</string>
     <string name="update_checking">Checking for updates…</string>

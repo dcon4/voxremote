@@ -587,7 +587,16 @@ private fun UpdateAvailableCard(
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(stringResource(R.string.update_available_title), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    stringResource(
+                        if (updateState is UpdateState.Error && release == null) {
+                            R.string.update_check_failed_title
+                        } else {
+                            R.string.update_available_title
+                        },
+                    ),
+                    style = MaterialTheme.typography.titleSmall,
+                )
                 Text(
                     when (updateState) {
                         is UpdateState.Downloading -> updateState.progressPercent?.let {
