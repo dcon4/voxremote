@@ -556,6 +556,8 @@
     <string name="server_settings_model_filter">Model filter</string>
     <string name="server_settings_model_filter_desc">Choose which models appear in selectors</string>
     <string name="server_settings_search_placeholder">Search models</string>
+    <string name="server_settings_enable_all_models">Enable all models</string>
+    <string name="server_settings_disable_all_models">Disable all models</string>
     <string name="server_settings_empty">No models found</string>
     <string name="server_settings_load_error">Failed to load models</string>
 

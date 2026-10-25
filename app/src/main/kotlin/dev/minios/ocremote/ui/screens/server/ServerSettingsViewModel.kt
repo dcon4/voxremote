@@ -469,6 +469,23 @@ class ServerSettingsViewModel @Inject constructor(
         }
     }
 
+    fun setAllModelsVisible(visible: Boolean) {
+        viewModelScope.launch {
+            val hidden = _hiddenModels.value
+            val disabled = _config.value.disabledProviders.toSet()
+            val providerSource = if (_providerCatalog.value.isNotEmpty()) _providerCatalog.value else _allProviders.value
+
+            providerSource
+                .filter { it.id !in disabled }
+                .flatMap { provider ->
+                    provider.models.values.map { model -> provider.id to model.id }
+                }
+                .forEach { (providerId, modelId) ->
+                    settingsRepository.setModelVisibility(serverId, providerId, modelId, visible)
+                }
+        }
+    }
+
     private fun rebuildUi() {
         val hidden = _hiddenModels.value
         val disabled = _config.value.disabledProviders.toSet()

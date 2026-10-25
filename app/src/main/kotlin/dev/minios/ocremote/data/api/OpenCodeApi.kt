@@ -160,6 +160,40 @@ class OpenCodeApi @Inject constructor(
         }.body()
     }
 
+    // ============ Models ============
+
+    /**
+     * List available LLM models from the server.
+     * GET /v1/models (OpenAI-compatible format via proxy) or /model (native)
+     */
+    suspend fun listModels(conn: ServerConnection): List<ModelInfo> {
+        // Try OpenAI-compatible /v1/models first (via proxy)
+        return try {
+            val response = httpClient.get("${conn.baseUrl}/v1/models") {
+                conn.authHeader?.let { header("Authorization", it) }
+            }
+            val modelsResponse = response.body<ModelsResponse>()
+            modelsResponse.data.map { dto ->
+                ModelInfo(
+                    id = dto.id,
+                    provider = dto.ownedBy ?: "unknown",
+                    name = dto.id,
+                    contextWindow = 0, // Not provided by /v1/models
+                    maxOutput = 0,
+                )
+            }
+        } catch (e: Exception) {
+            // Fallback to native /model endpoint if available
+            try {
+                httpClient.get("${conn.baseUrl}/model") {
+                    conn.authHeader?.let { header("Authorization", it) }
+                }.body<List<ModelInfo>>()
+            } catch (e2: Exception) {
+                emptyList()
+            }
+        }
+    }
+
     // ============ Session ============
 
     suspend fun listSessions(conn: ServerConnection, directory: String? = null): List<Session> {
@@ -1554,4 +1588,29 @@ data class ServerPaths(
     val config: String = "",
     val worktree: String = "",
     val directory: String = ""
+)
+
+// ============ Models ============
+
+@Serializable
+data class ModelsResponse(
+    @SerialName("object") val `object`: String = "list",
+    val data: List<ModelDto> = emptyList()
+)
+
+@Serializable
+data class ModelDto(
+    val id: String,
+    @SerialName("object") val `object`: String = "model",
+    @SerialName("owned_by") val ownedBy: String? = null,
+    val created: Long? = null
+)
+
+@Serializable
+data class ModelInfo(
+    val id: String,
+    val provider: String,
+    val name: String,
+    val contextWindow: Int = 0,
+    val maxOutput: Int = 0,
 )

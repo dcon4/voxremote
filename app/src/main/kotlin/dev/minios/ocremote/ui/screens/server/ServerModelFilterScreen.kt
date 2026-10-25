@@ -27,6 +27,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -130,6 +132,34 @@ fun ServerModelFilterScreen(
                 )
             )
             Spacer(Modifier.height(8.dp))
+
+            // Master toggle: Enable all / Disable all
+            if (isServerConnected && filteredGroups.isNotEmpty()) {
+                val allModels = filteredGroups.flatMap { it.models }
+                val allVisible = allModels.all { it.visible }
+                val anyVisible = allModels.any { it.visible }
+                val buttonText = if (allVisible) stringResource(R.string.server_settings_disable_all_models)
+                    else stringResource(R.string.server_settings_enable_all_models)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Button(
+                        onClick = { viewModel.setAllModelsVisible(!allVisible) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                        )
+                    ) {
+                        Text(
+                            text = buttonText,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
 
             when {
                 shouldShowInitialModelLoading(
