@@ -159,19 +159,23 @@ jobs:
             --title "Upstream sync needs manual merge (conflicts)" \
             --body-file issue-body.md
 
-      - name: Open issue on build failure
+      - name: Open issue on failure after clean merge
         if: failure() && steps.merge.outputs.result == 'clean'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "The upstream merge applied cleanly, but the build or unit tests failed." > issue-body.md
+          echo "The upstream merge applied cleanly, but a later step failed (build, tests, push, or PR creation)." > issue-body.md
           echo "" >> issue-body.md
           echo "Run log: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> issue-body.md
           echo "" >> issue-body.md
-          echo "An agent needs to fix the failures (likely fork-identity conflicts in tests or update URLs)." >> issue-body.md
+          echo "If the log says 'GitHub Actions is not permitted to create or approve pull requests':" >> issue-body.md
+          echo "enable Settings -> Actions -> General -> Workflow permissions ->" >> issue-body.md
+          echo "'Allow GitHub Actions to create and approve pull requests', then re-run this workflow." >> issue-body.md
+          echo "" >> issue-body.md
+          echo "Otherwise an agent needs to fix the failures (likely fork-identity conflicts in tests or update URLs)." >> issue-body.md
           gh issue create \
             --repo "$GITHUB_REPOSITORY" \
             --label upstream-sync \
-            --title "Upstream sync merge succeeded but build or tests failed" \
+            --title "Upstream sync failed after a clean merge" \
             --body-file issue-body.md
