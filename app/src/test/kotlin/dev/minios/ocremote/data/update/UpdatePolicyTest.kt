@@ -13,14 +13,14 @@ class UpdatePolicyTest {
             UpdateManifestDto(
                 versionName = "1.7.0",
                 versionCode = 23,
-                releaseUrl = "https://github.com/crim50n/oc-remote/releases/tag/v1.7.0",
+                releaseUrl = "https://github.com/dcon4/voxremote/releases/tag/v1.7.0",
             ),
         )
 
-        assertEquals(AvailableUpdate("1.7.0", 23, "https://github.com/crim50n/oc-remote/releases/tag/v1.7.0"), release)
+        assertEquals(AvailableUpdate("1.7.0", 23, "https://github.com/dcon4/voxremote/releases/tag/v1.7.0"), release)
         assertNull(
             UpdatePolicy.manifestToRelease(
-                UpdateManifestDto("1.7.0", 23, "https://github.com/crim50n/oc-remote/releases/tag/v1.6.9"),
+                UpdateManifestDto("1.7.0", 23, "https://github.com/dcon4/voxremote/releases/tag/v1.6.9"),
             ),
         )
     }
@@ -28,9 +28,9 @@ class UpdatePolicyTest {
     @Test
     fun `github fallback requires exact tag and release URL`() {
         assertEquals(
-            AvailableUpdate("1.7.0", null, "https://github.com/crim50n/oc-remote/releases/tag/v1.7.0"),
+            AvailableUpdate("1.7.0", null, "https://github.com/dcon4/voxremote/releases/tag/v1.7.0"),
             UpdatePolicy.githubToRelease(
-                GitHubReleaseDto("v1.7.0", "https://github.com/crim50n/oc-remote/releases/tag/v1.7.0"),
+                GitHubReleaseDto("v1.7.0", "https://github.com/dcon4/voxremote/releases/tag/v1.7.0"),
             ),
         )
         assertNull(
@@ -42,16 +42,16 @@ class UpdatePolicyTest {
 
     @Test
     fun `version code takes precedence and github falls back to semver`() {
-        assertTrue(UpdatePolicy.isNewer(AvailableUpdate("1.0.0", 23, "https://github.com/crim50n/oc-remote/releases/tag/v1.0.0"), 22, "9.0.0"))
-        assertFalse(UpdatePolicy.isNewer(AvailableUpdate("9.0.0", 22, "https://github.com/crim50n/oc-remote/releases/tag/v9.0.0"), 22, "1.0.0"))
-        assertTrue(UpdatePolicy.isNewer(AvailableUpdate("1.7.0", null, "https://github.com/crim50n/oc-remote/releases/tag/v1.7.0"), 22, "1.6.9"))
+        assertTrue(UpdatePolicy.isNewer(AvailableUpdate("1.0.0", 23, "https://github.com/dcon4/voxremote/releases/tag/v1.0.0"), 22, "9.0.0"))
+        assertFalse(UpdatePolicy.isNewer(AvailableUpdate("9.0.0", 22, "https://github.com/dcon4/voxremote/releases/tag/v9.0.0"), 22, "1.0.0"))
+        assertTrue(UpdatePolicy.isNewer(AvailableUpdate("1.7.0", null, "https://github.com/dcon4/voxremote/releases/tag/v1.7.0"), 22, "1.6.9"))
     }
 
     @Test
     fun `manifest requires a positive version code`() {
         assertNull(
             UpdatePolicy.manifestToRelease(
-                UpdateManifestDto("1.7.0", 0, "https://github.com/crim50n/oc-remote/releases/tag/v1.7.0"),
+                UpdateManifestDto("1.7.0", 0, "https://github.com/dcon4/voxremote/releases/tag/v1.7.0"),
             ),
         )
     }
@@ -62,9 +62,9 @@ class UpdatePolicyTest {
             UpdateManifestDto(
                 versionName = "1.7.0",
                 versionCode = 23,
-                releaseUrl = "https://github.com/crim50n/oc-remote/releases/tag/v1.7.0",
-                packageName = "dev.minios.ocremote",
-                apkUrl = "https://github.com/crim50n/oc-remote/releases/download/v1.7.0/oc-remote-1.7.0.apk",
+                releaseUrl = "https://github.com/dcon4/voxremote/releases/tag/v1.7.0",
+                packageName = "com.dcon4.voxremote",
+                apkUrl = "https://github.com/dcon4/voxremote/releases/download/v1.7.0/voxremote-1.7.0.apk",
                 sha256 = "A".repeat(64),
             ),
         )
@@ -75,9 +75,9 @@ class UpdatePolicyTest {
             UpdatePolicy.manifestToRelease(
                 UpdateManifestDto(
                     "1.7.0", 23,
-                    "https://github.com/crim50n/oc-remote/releases/tag/v1.7.0",
-                    "dev.minios.ocremote",
-                    "https://github.com/crim50n/oc-remote/releases/download/v1.7.1/oc-remote-1.7.0.apk",
+                    "https://github.com/dcon4/voxremote/releases/tag/v1.7.0",
+                    "com.dcon4.voxremote",
+                    "https://github.com/dcon4/voxremote/releases/download/v1.7.1/voxremote-1.7.0.apk",
                     "a".repeat(64),
                 ),
             ),
@@ -87,24 +87,24 @@ class UpdatePolicyTest {
     @Test
     fun `manifest rejects partial or malformed rich metadata but accepts legacy`() {
         val legacy = UpdatePolicy.manifestToRelease(
-            UpdateManifestDto("1.7.0", 23, "https://github.com/crim50n/oc-remote/releases/tag/v1.7.0"),
+            UpdateManifestDto("1.7.0", 23, "https://github.com/dcon4/voxremote/releases/tag/v1.7.0"),
         )
         assertTrue(legacy != null)
         assertFalse(legacy?.let(UpdatePolicy::isInstallable) ?: true)
         assertNull(
             UpdatePolicy.manifestToRelease(
                 UpdateManifestDto(
-                    "1.7.0", 23, "https://github.com/crim50n/oc-remote/releases/tag/v1.7.0",
-                    packageName = "dev.minios.ocremote",
+                    "1.7.0", 23, "https://github.com/dcon4/voxremote/releases/tag/v1.7.0",
+                    packageName = "com.dcon4.voxremote",
                 ),
             ),
         )
         assertNull(
             UpdatePolicy.manifestToRelease(
                 UpdateManifestDto(
-                    "1.7.0", 23, "https://github.com/crim50n/oc-remote/releases/tag/v1.7.0",
-                    "dev.minios.ocremote",
-                    "https://github.com/crim50n/oc-remote/releases/download/v1.7.0/oc-remote-1.7.0.apk",
+                    "1.7.0", 23, "https://github.com/dcon4/voxremote/releases/tag/v1.7.0",
+                    "com.dcon4.voxremote",
+                    "https://github.com/dcon4/voxremote/releases/download/v1.7.0/voxremote-1.7.0.apk",
                     "not-a-sha",
                 ),
             ),

@@ -180,7 +180,7 @@ if (!manual && !UpdatePolicy.shouldCheckAutomatically(now, preferences[LAST_ATTE
         val cached = decodeCachedRelease(dataStore.data.first()[CACHED_RELEASE_KEY])
         if (cached?.versionName == release.versionName && cached.releaseNotes != null) return@withLock cached
         require(UpdatePolicy.hasValidReleaseUrl(release))
-        val response = client.get("https://api.github.com/repos/crim50n/oc-remote/releases/tags/v${release.versionName}") {
+        val response = client.get("https://api.github.com/repos/dcon4/voxremote/releases/tags/v${release.versionName}") {
             header(HttpHeaders.Accept, "application/vnd.github+json")
             header(HttpHeaders.UserAgent, "OC-Remote/${BuildConfig.VERSION_NAME}")
             timeout { requestTimeoutMillis = UPDATE_TIMEOUT_MS }
