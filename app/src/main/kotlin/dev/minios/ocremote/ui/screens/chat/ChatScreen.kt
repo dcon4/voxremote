@@ -1,4 +1,7 @@
 package dev.minios.ocremote.ui.screens.chat
+import dev.minios.ocremote.ui.components.readableContentWidth
+import dev.minios.ocremote.ui.components.AppDropdownMenu as DropdownMenu
+import dev.minios.ocremote.ui.components.AppDropdownMenuItem as DropdownMenuItem
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -71,6 +74,10 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
@@ -85,6 +92,13 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -194,6 +208,14 @@ import dev.minios.ocremote.logging.AppLogger as Log
 import android.view.MotionEvent
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import dev.minios.ocremote.data.repository.ChatViewSnapshot
+import kotlinx.coroutines.flow.collectLatest
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.haze
 import dev.minios.ocremote.BuildConfig
 import androidx.compose.ui.res.stringResource
 import dev.minios.ocremote.R
@@ -1038,11 +1060,23 @@ private suspend fun buildAttachmentFromUri(
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
+    tabsOverlayVisible: Boolean = false,
+    desktopTabsVisible: Boolean = false,
+    onTerminalFocusChange: (Boolean) -> Unit = {},
+    requestedTabAction: dev.minios.ocremote.ui.navigation.SessionTabAction? = null,
+    onTabActionHandled: () -> Unit = {},
+    onOpenAppSettings: () -> Unit = {},
+    onOpenServers: () -> Unit = {},
+    onOpenAbout: () -> Unit = {},
+    onAddServer: () -> Unit = {},
+    openTabCount: Int = 0,
+    onOpenTabs: () -> Unit = {},
     onNavigateBack: () -> Unit,
     onNavigateToSession: (sessionId: String) -> Unit = {},
     onNavigateToChildSession: (sessionId: String) -> Unit = {},
     onOpenInWebView: () -> Unit = {},
     onOpenWorkspace: (directory: String) -> Unit = {},
+    onOpenServerFile: (directory: String, href: String) -> Unit = { _, _ -> },
     onManageModels: () -> Unit = {},
     initialSharedAttachments: List<Uri> = emptyList(),
     onSharedAttachmentsConsumed: () -> Unit = {},
@@ -1053,6 +1087,7 @@ fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val historyLoaded by viewModel.historyLoaded.collectAsState()
     val draftText by viewModel.draftText.collectAsState()
     val draftAttachmentUris by viewModel.draftAttachmentUris.collectAsState()
     var inputText by remember { mutableStateOf(TextFieldValue("")) }
@@ -1076,22 +1111,137 @@ fun ChatScreen(
     var showMenu by remember { mutableStateOf(false) }
     var showAttachmentOptions by remember { mutableStateOf(false) }
     var showSubagentContextDetails by remember { mutableStateOf(false) }
-    var isTerminalMode by rememberSaveable { mutableStateOf(startInTerminalMode) }
+    var isTerminalMode by rememberSaveable { mutableStateOf(startInTerminalMode || viewModel.restoredView?.terminal == true) }
+    var terminalDocked by rememberSaveable { mutableStateOf(viewModel.restoredView?.terminalDocked ?: false) }
+    var terminalPaneFraction by rememberSaveable { mutableFloatStateOf((viewModel.restoredView?.terminalPaneFraction ?: 0.45f).coerceIn(0.25f, 0.65f)) }
+    var terminalInputFocused by remember { mutableStateOf(false) }
+    val hardwareKeyboard = LocalConfiguration.current.keyboard == android.content.res.Configuration.KEYBOARD_QWERTY &&
+        LocalConfiguration.current.hardKeyboardHidden != android.content.res.Configuration.HARDKEYBOARDHIDDEN_YES
+    val desktopTerminalControls = desktopTabsVisible || hardwareKeyboard
+    val showDockedTerminal = desktopTabsVisible && terminalDocked && !isTerminalMode
+    var terminalExtraKeysOverride by rememberSaveable { mutableStateOf(viewModel.restoredView?.terminalExtraKeys) }
+    val desktopExtraKeys = terminalExtraKeysOverride ?: !hardwareKeyboard
+    var desktopTerminalPicker by remember { mutableStateOf(false) }
+    val terminalViewports = remember { mutableMapOf<String, TerminalViewportState>() }
+    var workspaceWidthPx by remember { mutableIntStateOf(1) }
+    val terminalFocusCallback by rememberUpdatedState(onTerminalFocusChange)
+    LaunchedEffect(terminalInputFocused) { terminalFocusCallback(terminalInputFocused) }
+    DisposableEffect(Unit) {
+        onDispose { terminalFocusCallback(false) }
+    }
     var terminalCtrlLatched by rememberSaveable { mutableStateOf(false) }
     var terminalAltLatched by rememberSaveable { mutableStateOf(false) }
     var terminalVirtualCtrlDown by remember { mutableStateOf(false) }
     var terminalVirtualFnDown by remember { mutableStateOf(false) }
+    LaunchedEffect(hardwareKeyboard) {
+        if (hardwareKeyboard) {
+            terminalCtrlLatched = false
+            terminalAltLatched = false
+            terminalVirtualCtrlDown = false
+            terminalVirtualFnDown = false
+        }
+    }
     var showTerminalPanelHintOverlay by remember { mutableStateOf(false) }
     val terminalFocusRequester = remember { FocusRequester() }
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val externalUriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+    val currentOpenServerFile by rememberUpdatedState(onOpenServerFile)
+    val serverFileUriHandler = remember(externalUriHandler, viewModel) {
+        object : androidx.compose.ui.platform.UriHandler {
+            override fun openUri(uri: String) {
+                if (dev.minios.ocremote.data.api.parseServerFileLink(uri) != null) {
+                    currentOpenServerFile(viewModel.getSessionDirectory().orEmpty(), uri)
+                } else if (!uri.startsWith("file:", ignoreCase = true)) {
+                    externalUriHandler.openUri(uri)
+                }
+            }
+        }
+    }
     val isAmoled = isAmoledTheme()
     val keyboardController = LocalSoftwareKeyboardController.current
+    val chatHaze = remember { HazeState() }
+    val acrylicModifier = chatAcrylicModifier(chatHaze)
+    ChatAcrylicSystemBars(enabled = (!isTerminalMode || desktopTabsVisible) && !tabsOverlayVisible, background = MaterialTheme.colorScheme.surface)
     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
     val view = LocalView.current
     val density = LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
+    val readingAutoHide by viewModel.readingAutoHide.collectAsState()
+    val readingHideStatus by viewModel.readingHideStatus.collectAsState()
+    val readingHideNavigation by viewModel.readingHideNavigation.collectAsState()
+    val touchExploration = rememberTouchExplorationEnabled()
+    var readingProgress by remember { mutableFloatStateOf(0f) }
+    var keepBottomDuringReveal by remember { mutableStateOf(false) }
+    var readingAnimation by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    fun revealReadingPanels(hidden: Boolean, keepBottom: Boolean = keepBottomDuringReveal || !listState.canScrollForward) {
+        readingAnimation?.cancel()
+        keepBottomDuringReveal = !hidden && keepBottom
+        readingAnimation = coroutineScope.launch {
+            androidx.compose.animation.core.animate(readingProgress, if (hidden) 1f else 0f,
+                animationSpec = androidx.compose.animation.core.tween(180)) { value, _ ->
+                readingProgress = value
+            }
+        }
+    }
+    val readingBlocked = tabsOverlayVisible || imeVisible || touchExploration || isTerminalMode || showModelPicker || showMenu || showRenameDialog ||
+        showAttachmentOptions || uiState.pendingInteractions.isNotEmpty() || !isServerConnected || !uiState.sessionLoaded
+    val panelCollapse = if (readingBlocked) 0f else readingProgress
+    val topPanelCollapse by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = panelCollapse,
+        animationSpec = androidx.compose.animation.core.tween(320),
+        label = "top panel collapse",
+    )
+    val actualReadingHidden = topPanelCollapse >= 0.999f
+    LaunchedEffect(keepBottomDuringReveal) {
+        if (!keepBottomDuringReveal) return@LaunchedEffect
+        var settledFrames = 0
+        // Top and bottom panels have different durations. Their padding changes must both
+        // settle before releasing the bottom anchor; one final scroll after 180 ms is too early.
+        while (keepBottomDuringReveal) {
+            withFrameNanos { }
+            val lastIndex = listState.layoutInfo.totalItemsCount - 1
+            if (lastIndex >= 0) listState.requestScrollToItem(lastIndex)
+            settledFrames = if (readingProgress == 0f && topPanelCollapse == 0f) settledFrames + 1 else 0
+            if (settledFrames >= 3) keepBottomDuringReveal = false
+        }
+    }
+    val currentReadingBlocked by rememberUpdatedState(readingBlocked)
+    val currentAutoHide by rememberUpdatedState(readingAutoHide)
+    val readingScroll = remember(density) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && available.y > 0f) {
+                    keepBottomDuringReveal = false
+                }
+                if (source == NestedScrollSource.UserInput && currentAutoHide && !currentReadingBlocked) {
+                    readingAnimation?.cancel()
+                    val travel = 96f * density.density
+                    val previous = readingProgress
+                    readingProgress = readingCollapseFraction(previous, available.y, travel)
+                    return Offset(0f, (previous - readingProgress) * travel)
+                }
+                return Offset.Zero
+            }
+            override suspend fun onPostFling(consumed: androidx.compose.ui.unit.Velocity,
+                available: androidx.compose.ui.unit.Velocity): androidx.compose.ui.unit.Velocity {
+                if (currentAutoHide && !currentReadingBlocked && readingProgress > 0f && readingProgress < 1f) {
+                    revealReadingPanels(readingProgress >= 0.5f)
+                }
+                return androidx.compose.ui.unit.Velocity.Zero
+            }
+        }
+    }
+    LaunchedEffect(readingBlocked, readingAutoHide) {
+        if (readingBlocked || !readingAutoHide) {
+            readingAnimation?.cancel()
+            keepBottomDuringReveal = false
+            readingProgress = 0f
+        }
+    }
+    ReadingSystemBars(actualReadingHidden && !tabsOverlayVisible, readingHideStatus, readingHideNavigation)
+    BackHandler(enabled = panelCollapse > 0f || topPanelCollapse > 0f) { revealReadingPanels(false) }
     val usesGestureNavigation = WindowInsets.systemGestures.getLeft(density, LayoutDirection.Ltr) > 0
     var terminalOverlayHeightPx by remember { mutableStateOf(0) }
 
@@ -1113,6 +1263,11 @@ fun ChatScreen(
     val hapticAmplitude by viewModel.hapticAmplitude.collectAsState()
     val keepScreenOn by viewModel.keepScreenOn.collectAsState()
     val compressImageAttachments by viewModel.compressImageAttachments.collectAsState()
+    val desktopFullWidthChat by viewModel.desktopFullWidthChat.collectAsState()
+    val chatWidthModifier = if (desktopTabsVisible && desktopFullWidthChat) Modifier.fillMaxWidth()
+        else Modifier.readableContentWidth(960.dp)
+    val queuedInbox by viewModel.queuedInbox.collectAsState()
+    val inboxActions by viewModel.inboxActions.collectAsState()
     val imageAttachmentMaxLongSide by viewModel.imageAttachmentMaxLongSide.collectAsState()
     val imageAttachmentWebpQuality by viewModel.imageAttachmentWebpQuality.collectAsState()
     val terminalVersion by viewModel.terminalVersion.collectAsState()
@@ -1121,8 +1276,24 @@ fun ChatScreen(
     val activeTerminalTabId by viewModel.activeTerminalTabId.collectAsState()
     val activeTerminalTab = terminalTabs.firstOrNull { it.id == activeTerminalTabId }
     val terminalFontSizeSp by viewModel.terminalFontSizeSp.collectAsState()
+    LaunchedEffect(terminalTabs.map { it.id }) {
+        val retained = terminalTabs.mapTo(mutableSetOf()) { it.id }
+        terminalViewports.keys.retainAll(retained)
+    }
     val terminalDrawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_START) viewModel.setScreenActive(true)
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) viewModel.setScreenActive(false)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        viewModel.setScreenActive(lifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED))
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.setScreenActive(false)
+        }
+    }
     var showSendConfirmDialog by remember { mutableStateOf(false) }
     // Pending send action: stored so the confirm dialog can trigger it
     var pendingSendAction by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -1141,9 +1312,9 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(isTerminalMode, isServerConnected) {
-        if (isTerminalMode && isServerConnected) {
-            if (viewModel.shouldShowTerminalPanelHint() && TerminalPanelHintCoordinator.tryShow()) {
+    LaunchedEffect(isTerminalMode, showDockedTerminal, isServerConnected) {
+        if ((isTerminalMode || showDockedTerminal) && isServerConnected) {
+            if (!desktopTerminalControls && viewModel.shouldShowTerminalPanelHint() && TerminalPanelHintCoordinator.tryShow()) {
                 showTerminalPanelHintOverlay = true
                 launch {
                     delay(8_000)
@@ -1156,6 +1327,7 @@ fun ChatScreen(
                         snackbarHostState.showSnackbar(context.getString(R.string.chat_terminal_connect_failed))
                     }
                     isTerminalMode = false
+                    terminalDocked = false
                 }
             }
         } else {
@@ -1195,10 +1367,13 @@ fun ChatScreen(
         }
     }
 
-    DisposableEffect(isTerminalMode) {
+    DisposableEffect(isTerminalMode, desktopTerminalControls) {
         val activity = context as? MainActivity
-        if (isTerminalMode && activity != null) {
+        if (isTerminalMode && !desktopTerminalControls && activity != null) {
             activity.setTerminalKeyInterceptor { event ->
+                if (event.device?.keyboardType == android.view.InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+                    return@setTerminalKeyInterceptor false
+                }
                 when (event.keyCode) {
                     android.view.KeyEvent.KEYCODE_VOLUME_DOWN -> {
                         terminalVirtualCtrlDown = event.action == android.view.KeyEvent.ACTION_DOWN
@@ -1226,9 +1401,9 @@ fun ChatScreen(
 
     // Force status bar black while terminal is visible.
     val isDarkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    DisposableEffect(isTerminalMode) {
+    DisposableEffect(isTerminalMode, tabsOverlayVisible, desktopTabsVisible, isDarkTheme) {
         val activity = context as? android.app.Activity
-        if (isTerminalMode && activity != null) {
+        if (isTerminalMode && !tabsOverlayVisible && !desktopTabsVisible && activity != null) {
             activity.window.statusBarColor = android.graphics.Color.BLACK
             androidx.core.view.WindowCompat.getInsetsController(
                 activity.window, activity.window.decorView
@@ -1243,9 +1418,10 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(isTerminalMode, terminalConnected) {
-        if (isTerminalMode && terminalConnected) {
+    LaunchedEffect(isTerminalMode, showDockedTerminal, terminalConnected, activeTerminalTabId) {
+        if ((isTerminalMode || showDockedTerminal) && terminalConnected) {
             terminalFocusRequester.requestFocus()
+            if (!desktopTerminalControls) keyboardController?.show()
         }
     }
 
@@ -1253,10 +1429,7 @@ fun ChatScreen(
         if (!terminalConnected) return
         val clip = clipboardManager.getText()?.text ?: return
         if (clip.isEmpty()) return
-        val cleaned = clip
-            .replace(Regex("[\u001B\u0080-\u009F]"), "")
-            .replace("\r\n", "\r")
-            .replace('\n', '\r')
+        val cleaned = terminalPaste(clip, viewModel.terminalEmulator.bracketedPasteEnabled)
         if (cleaned.isNotEmpty()) {
             viewModel.sendTerminalInput(cleaned)
         }
@@ -1289,13 +1462,11 @@ fun ChatScreen(
                     AudioManager.FLAG_SHOW_UI
                 )
             }
-            if (fnResult.toggleKeyboard) {
-                if (imeVisible) {
-                    keyboardController?.hide()
-                } else {
-                    terminalFocusRequester.requestFocus()
-                    keyboardController?.show()
-                }
+            if (fnResult.toggleToolbar) {
+                terminalExtraKeysOverride = !desktopExtraKeys
+                terminalVirtualFnDown = false
+                terminalCtrlLatched = false
+                terminalAltLatched = false
             }
             fnResult.output
         } else {
@@ -1582,19 +1753,59 @@ fun ChatScreen(
 
     // Whether auto-scroll should follow new content.
     // Disabled when user manually scrolls up; re-enabled when user scrolls back to bottom.
-    var autoScrollEnabled by remember { mutableStateOf(true) }
+    var autoScrollEnabled by remember { mutableStateOf(viewModel.restoredView?.following ?: true) }
+    var viewRestored by remember { mutableStateOf(viewModel.restoredView?.following != false) }
+    var restorationPages by remember { mutableIntStateOf(0) }
+    var initialScrollDone by remember { mutableStateOf(false) }
+    val latestFollowing by rememberUpdatedState(autoScrollEnabled)
+    val latestTerminalMode by rememberUpdatedState(isTerminalMode)
+    val latestTerminalDocked by rememberUpdatedState(terminalDocked)
+    val latestTerminalFraction by rememberUpdatedState(terminalPaneFraction)
+    val latestTerminalExtraKeys by rememberUpdatedState(terminalExtraKeysOverride)
+    val latestViewRestored by rememberUpdatedState(viewRestored)
+    LaunchedEffect(viewModel.workspaceKey) {
+        snapshotFlow {
+            ChatViewSnapshot(listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String,
+                 listState.firstVisibleItemScrollOffset, latestFollowing, latestTerminalMode, latestTerminalDocked, latestTerminalFraction,
+                 terminalExtraKeys = latestTerminalExtraKeys)
+        }.collectLatest { snapshot ->
+            kotlinx.coroutines.delay(400)
+            if (latestViewRestored) viewModel.saveView(snapshot)
+        }
+    }
+    DisposableEffect(viewModel.workspaceKey) {
+        onDispose {
+            val item = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+            if (latestViewRestored) viewModel.saveView(ChatViewSnapshot(item?.key as? String,
+                 listState.firstVisibleItemScrollOffset, latestFollowing, latestTerminalMode, latestTerminalDocked, latestTerminalFraction,
+                 terminalExtraKeys = latestTerminalExtraKeys))
+        }
+    }
+    LaunchedEffect(uiState.sessionTitle) {
+        if (uiState.sessionLoaded) viewModel.saveWorkspaceTitle(uiState.sessionTitle)
+    }
+    LaunchedEffect(historyLoaded, isServerConnected, uiState.isLoading, uiState.isLoadingOlder, uiState.messages.size) {
+        if (viewRestored || (!historyLoaded && isServerConnected) || uiState.isLoading || uiState.isLoadingOlder) return@LaunchedEffect
+        val snapshot = viewModel.restoredView ?: return@LaunchedEffect
+        val turns = groupChatTurns(uiState.messages)
+        val index = turns.indexOfFirst { it.key == snapshot.itemKey }
+        if (index >= 0) {
+            withFrameNanos { }
+            listState.scrollToItem(index + if (uiState.hasOlderMessages) 1 else 0, snapshot.offset)
+            viewRestored = true
+        } else if (isServerConnected && uiState.hasOlderMessages && restorationPages < 10) {
+            restorationPages++
+            viewModel.loadOlderMessages()
+        } else {
+            viewRestored = true
+        }
+    }
 
     // True when the very bottom of the list is visible (accounting for offset within tall items)
     val isAtBottom by remember {
         derivedStateOf {
-            val info = listState.layoutInfo
-            val lastVisible = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
-            val totalItems = info.totalItemsCount
-            if (lastVisible.index < totalItems - 1) return@derivedStateOf false
-            // Last item is visible — check if its bottom edge is within the viewport
-            val itemBottom = lastVisible.offset + lastVisible.size
-            val viewportEnd = info.viewportEndOffset
-            itemBottom <= viewportEnd + 50 // 50px tolerance
+            // Includes the space reserved beneath the acrylic composer, not just the last row.
+            !listState.canScrollForward
         }
     }
 
@@ -1605,7 +1816,7 @@ fun ChatScreen(
             autoScrollEnabled = false
         } else if (isAtBottom) {
             // User stopped scrolling and ended up at the bottom — re-enable
-            autoScrollEnabled = true
+            if (viewRestored) autoScrollEnabled = true
         }
     }
 
@@ -1631,7 +1842,7 @@ fun ChatScreen(
     val pendingCount = pendingInteractions.size
     val isBusy = isWorkingSessionStatus(uiState.sessionStatus)
     LaunchedEffect(messageCount, lastPartCount, lastContentLength, pendingCount, isBusy) {
-        if (messageCount > 0 && autoScrollEnabled) {
+        if (messageCount > 0 && autoScrollEnabled && viewRestored) {
             val lastIndex = listState.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1
             listState.scrollToItem(lastIndex)
         }
@@ -1639,10 +1850,117 @@ fun ChatScreen(
 
     // Also auto-scroll when first loading
     LaunchedEffect(uiState.isLoading) {
-        if (!uiState.isLoading && messageCount > 0) {
+        if (!initialScrollDone && !uiState.isLoading && messageCount > 0 && viewModel.restoredView?.following != false) {
             val lastIndex = listState.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1
             listState.scrollToItem(lastIndex)
             autoScrollEnabled = true
+            initialScrollDone = true
+        }
+    }
+
+    fun sessionNotice(message: String) { coroutineScope.launch { snackbarHostState.showSnackbar(message) } }
+    fun sessionResult(ok: Boolean, success: Int, failure: Int) = sessionNotice(context.getString(if (ok) success else failure))
+    fun performSessionAction(action: SessionMenuAction) {
+        showMenu = false
+        when (action) {
+            SessionMenuAction.ATTACH -> { inputMode = ChatInputMode.NORMAL.name; showAttachmentOptions = true }
+            SessionMenuAction.COMPRESS_IMAGES -> viewModel.setCompressImageAttachments(!compressImageAttachments)
+            SessionMenuAction.TERMINAL -> if (desktopTabsVisible) { terminalDocked = true; isTerminalMode = false } else { isTerminalMode = true }
+            SessionMenuAction.FILES -> onOpenWorkspace(viewModel.getSessionDirectory().orEmpty())
+            SessionMenuAction.WEB -> onOpenInWebView()
+            SessionMenuAction.RELOAD -> viewModel.reloadSession()
+            SessionMenuAction.RENAME -> showRenameDialog = true
+            SessionMenuAction.NEW -> viewModel.createNewSession { session ->
+                if (session != null) onNavigateToSession(session.id) else sessionNotice(context.getString(R.string.chat_session_create_failed))
+            }
+            SessionMenuAction.FORK -> viewModel.forkSession { session ->
+                if (session != null) onNavigateToSession(session.id) else sessionNotice(context.getString(R.string.chat_fork_failed))
+            }
+            SessionMenuAction.COMPACT -> viewModel.compactSession { sessionResult(it, R.string.chat_session_compacted, R.string.chat_session_compact_failed) }
+            SessionMenuAction.REVIEW -> viewModel.executeCommand("review") {
+                sessionNotice(context.getString(if (it) R.string.chat_command_executed else R.string.chat_command_failed, "review"))
+            }
+            SessionMenuAction.UNSHARE -> viewModel.unshareSession { sessionResult(it, R.string.chat_session_unshared, R.string.chat_session_unshare_failed) }
+            SessionMenuAction.SHARE -> viewModel.shareSession { url ->
+                if (url != null) clipboardManager.setText(AnnotatedString(url))
+                sessionNotice(context.getString(if (url != null) R.string.chat_share_url_copied else R.string.chat_share_failed))
+            }
+            SessionMenuAction.EXPORT -> {
+                val slug = uiState.sessionTitle.take(30).replace(Regex("[^a-zA-Z0-9_-]"), "_").ifBlank { "session" }
+                exportLauncher.launch("$slug.json")
+            }
+            SessionMenuAction.FULL_WIDTH -> viewModel.setDesktopFullWidthChat(!desktopFullWidthChat)
+            SessionMenuAction.SETTINGS -> onOpenAppSettings()
+            SessionMenuAction.SERVERS -> onOpenServers()
+            SessionMenuAction.ABOUT -> onOpenAbout()
+            SessionMenuAction.ADD_SERVER -> onAddServer()
+        }
+    }
+    @Composable
+    fun SessionMenu() {
+        ChatSessionMenu(showMenu, { showMenu = false }, ::performSessionAction,
+            sessionActions = uiState.sessionLoaded && uiState.parentSessionId == null,
+            connected = isServerConnected, supportsSharing = uiState.serverSupportsSharing,
+            shared = uiState.shareUrl != null, compressImages = compressImageAttachments,
+            desktop = desktopTabsVisible, fullWidth = desktopFullWidthChat)
+    }
+    LaunchedEffect(requestedTabAction, uiState.sessionLoaded, isServerConnected) {
+        val action = requestedTabAction ?: return@LaunchedEffect
+        if (action != dev.minios.ocremote.ui.navigation.SessionTabAction.OPEN_MENU && (!uiState.sessionLoaded || !isServerConnected)) return@LaunchedEffect
+        when (action) {
+            dev.minios.ocremote.ui.navigation.SessionTabAction.RENAME -> showRenameDialog = true
+            dev.minios.ocremote.ui.navigation.SessionTabAction.RELOAD -> viewModel.reloadSession()
+            dev.minios.ocremote.ui.navigation.SessionTabAction.OPEN_MENU -> showMenu = true
+            else -> Unit
+        }
+        onTabActionHandled()
+    }
+
+    @Composable
+    fun DesktopTerminal(modifier: Modifier) {
+        val renderedTerminalId = activeTerminalTabId
+        Column(modifier.background(Color.Black).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical))) {
+            DesktopTerminalToolbar(
+                tabs = terminalTabs, activeId = activeTerminalTabId, connected = isServerConnected,
+                canDock = desktopTabsVisible, docked = showDockedTerminal,
+                amoled = isAmoled,
+                pickerOpen = desktopTerminalPicker, onPicker = { desktopTerminalPicker = it },
+                extraKeys = desktopExtraKeys, onExtraKeys = {
+                    terminalExtraKeysOverride = !desktopExtraKeys
+                    if (desktopExtraKeys) { terminalCtrlLatched = false; terminalAltLatched = false }
+                    terminalFocusRequester.requestFocus()
+                },
+                onSelect = { id -> viewModel.switchTerminalTab(id); if (id == renderedTerminalId) terminalFocusRequester.requestFocus() },
+                onNew = { viewModel.createTerminalTab { if (!it) sessionNotice(context.getString(R.string.chat_terminal_connect_failed)) } },
+                onRecover = { id -> viewModel.recoverTerminalTab(id) { if (!it) sessionNotice(context.getString(R.string.chat_terminal_connect_failed)) } },
+                onClose = viewModel::closeTerminalTab,
+                onDock = { if (showDockedTerminal) isTerminalMode = true else { terminalDocked = true; isTerminalMode = false } },
+                onHide = { terminalDocked = false; isTerminalMode = false; terminalInputFocused = false },
+                onPaste = { pasteClipboardToTerminal(); terminalFocusRequester.requestFocus() },
+                onKeyboard = { terminalFocusRequester.requestFocus(); keyboardController?.show() },
+                onResetFont = { viewModel.setTerminalFontSize(DEFAULT_TERMINAL_FONT_SIZE_SP); terminalFocusRequester.requestFocus() },
+            )
+            key(activeTerminalTabId) {
+                SessionTerminalInline(
+                    emulator = viewModel.terminalEmulator, terminalVersion = terminalVersion, connected = terminalConnected,
+                    focusRequester = terminalFocusRequester,
+                    onSendInput = { if (viewModel.activeTerminalTabId.value == renderedTerminalId) sendTerminalChunk(it) },
+                    onSendRawInput = { text -> renderedTerminalId?.let { viewModel.sendTerminalTabInput(it, text) } },
+                    onPaste = ::pasteClipboardToTerminal,
+                    onResize = viewModel::resizeTerminal, fontSizeSp = terminalFontSizeSp, onFontSizeChange = viewModel::setTerminalFontSize,
+                    desktopInput = true, onInputFocusChange = { if (viewModel.activeTerminalTabId.value == renderedTerminalId) terminalInputFocused = it },
+                    viewport = terminalViewports.getOrPut(activeTerminalTabId ?: "pending") { TerminalViewportState() },
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            }
+            if (desktopExtraKeys) TerminalKeyboardOverlay(
+                connected = terminalConnected, ctrlLatched = terminalCtrlLatched, altLatched = terminalAltLatched,
+                cursorApp = viewModel.terminalEmulator.cursorKeysApplicationMode,
+                onToggleDrawer = { desktopTerminalPicker = true },
+                onToggleCtrl = { terminalCtrlLatched = !terminalCtrlLatched }, onToggleAlt = { terminalAltLatched = !terminalAltLatched },
+                onSendInput = ::sendTerminalChunk, onCtrlC = { viewModel.sendTerminalInput("\u0003") },
+                onClear = { viewModel.sendTerminalInput("\u000c") },
+            )
         }
     }
 
@@ -1841,24 +2159,38 @@ fun ChatScreen(
             amplitude = hapticAmplitude,
         ),
         LocalImageSaveRequest provides requestSaveImage,
+        androidx.compose.ui.platform.LocalUriHandler provides serverFileUriHandler,
     ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { dev.minios.ocremote.ui.components.AppSnackbarHost(snackbarHostState) },
         topBar = {
-            if ((!isTerminalMode && uiState.sessionLoaded) || !isServerConnected) {
+            if (desktopTabsVisible) {
+                Column {
+                    Box(Modifier.fillMaxWidth()) { Box(Modifier.align(Alignment.TopEnd)) { SessionMenu() } }
+                    if (!isServerConnected) ServerConnectionBanner(connecting = isServerConnecting, onConnect = onConnectServer)
+                }
+            } else CollapsingChatPanel(topPanelCollapse, top = true, backgroundModifier = if (!isTerminalMode) acrylicModifier else Modifier) {
+            if (!isTerminalMode || !isServerConnected) {
             Column(modifier = if (isTerminalMode) Modifier.statusBarsPadding() else Modifier) {
-            if (!isTerminalMode && uiState.sessionLoaded) {
+            if (!isTerminalMode) {
             Box {
             TopAppBar(
                 title = {
                     Column {
-                        Text(
+                        if (!uiState.sessionLoaded) {
+                            dev.minios.ocremote.ui.components.SessionTitlePlaceholder(
+                                loading = isServerConnecting || (isServerConnected && uiState.error == null),
+                            )
+                        } else Text(
                             text = uiState.sessionTitle,
                             style = MaterialTheme.typography.titleMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        Text(viewModel.serverName, style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                         // Subtitle: total tokens and cost for the session
                         val totalTokens = uiState.totalInputTokens + uiState.totalOutputTokens
                         if (totalTokens > 0 || uiState.totalCost > 0) {
@@ -1885,6 +2217,7 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    if (!desktopTabsVisible) dev.minios.ocremote.ui.components.SessionTabsButton(openTabCount, onOpenTabs)
                     if (
                         uiState.parentSessionId != null &&
                         uiState.contextWindow > 0 &&
@@ -1918,9 +2251,9 @@ fun ChatScreen(
                             }
                         }
                     }
-                    if (uiState.parentSessionId == null) Box {
+                    Box {
                         val isAmoled = isAmoledTheme()
-                        IconButton(onClick = { showMenu = true }) {
+                        IconButton(onClick = { showMenu = true }, enabled = uiState.sessionLoaded && uiState.parentSessionId == null) {
                             Icon(Lucide.EllipsisVertical, contentDescription = stringResource(R.string.more_options))
                         }
                         if (inputText.text.isNotEmpty()) {
@@ -1942,207 +2275,16 @@ fun ChatScreen(
                                 }
                             }
                         }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false },
-                            modifier = Modifier.appPopupBorder(),
-                            containerColor = appPopupContainerColor(),
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.chat_attach)) },
-                                leadingIcon = { Icon(Lucide.Paperclip, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    inputMode = ChatInputMode.NORMAL.name
-                                    showAttachmentOptions = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.tool_terminal)) },
-                                leadingIcon = { Icon(Lucide.Terminal, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    isTerminalMode = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_workspace_files)) },
-                                onClick = {
-                                    showMenu = false
-                                    onOpenWorkspace(viewModel.getSessionDirectory().orEmpty())
-                                },
-                                leadingIcon = {
-                                    Icon(Lucide.FolderOpen, contentDescription = null)
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_open_in_web)) },
-                                onClick = {
-                                    showMenu = false
-                                    onOpenInWebView()
-                                },
-                                leadingIcon = {
-                                    Icon(Lucide.Globe, contentDescription = null)
-                                },
-                            )
-                            HorizontalDivider(
-                                modifier = Modifier.padding(vertical = 4.dp),
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f),
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_reload_session)) },
-                                onClick = {
-                                    showMenu = false
-                                    viewModel.reloadSession()
-                                },
-                                leadingIcon = {
-                                    Icon(Lucide.RefreshCw, contentDescription = null)
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_rename_session)) },
-                                onClick = {
-                                    showMenu = false
-                                    showRenameDialog = true
-                                },
-                                leadingIcon = {
-                                    Icon(Lucide.Pencil, contentDescription = null)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_new_session)) },
-                                onClick = {
-                                    showMenu = false
-                                    viewModel.createNewSession { session ->
-                                        if (session != null) {
-                                            onNavigateToSession(session.id)
-                                        } else {
-                                            coroutineScope.launch {
-                                                snackbarHostState.showSnackbar(context.getString(R.string.chat_session_create_failed))
-                                            }
-                                        }
-                                    }
-                                },
-                                leadingIcon = {
-                                    Icon(Lucide.Plus, contentDescription = null)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_fork_session)) },
-                                onClick = {
-                                    showMenu = false
-                                    viewModel.forkSession { session ->
-                                        if (session != null) {
-                                            onNavigateToSession(session.id)
-                                        } else {
-                                            coroutineScope.launch {
-                                                snackbarHostState.showSnackbar(context.getString(R.string.chat_fork_failed))
-                                            }
-                                        }
-                                    }
-                                },
-                                leadingIcon = {
-                                    Icon(Lucide.GitFork, contentDescription = null)
-                                }
-                            )
-                            HorizontalDivider(
-                                modifier = Modifier.padding(vertical = 4.dp),
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f),
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_compact_session)) },
-                                onClick = {
-                                    showMenu = false
-                                    viewModel.compactSession { ok ->
-                                        coroutineScope.launch {
-                                            snackbarHostState.showSnackbar(
-                                                if (ok) context.getString(R.string.chat_session_compacted) else context.getString(R.string.chat_session_compact_failed)
-                                            )
-                                        }
-                                    }
-                                },
-                                leadingIcon = {
-                                    Icon(Lucide.Shrink, contentDescription = null)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_review_changes)) },
-                                onClick = {
-                                    showMenu = false
-                                    viewModel.executeCommand("review") { ok ->
-                                        coroutineScope.launch {
-                                            snackbarHostState.showSnackbar(
-                                                if (ok) context.getString(R.string.chat_command_executed, "review") else context.getString(R.string.chat_command_failed, "review")
-                                            )
-                                        }
-                                    }
-                                },
-                                leadingIcon = {
-                                    Icon(Lucide.ClipboardCheck, contentDescription = null)
-                                },
-                            )
-                            // Show Share or Unshare depending on current share status
-                            if (uiState.shareUrl != null) {
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.cmd_unshare)) },
-                                    onClick = {
-                                        showMenu = false
-                                        viewModel.unshareSession { ok ->
-                                            coroutineScope.launch {
-                                                snackbarHostState.showSnackbar(
-                                                    if (ok) context.getString(R.string.chat_session_unshared) else context.getString(R.string.chat_session_unshare_failed)
-                                                )
-                                            }
-                                        }
-                                    },
-                                    leadingIcon = {
-                                        Icon(Lucide.Unlink, contentDescription = null)
-                                    }
-                                )
-                            } else {
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.menu_share_session)) },
-                                    onClick = {
-                                        showMenu = false
-                                        viewModel.shareSession { url ->
-                                            coroutineScope.launch {
-                                                if (url != null) {
-                                                    clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(url))
-                                                    snackbarHostState.showSnackbar(context.getString(R.string.chat_share_url_copied))
-                                                } else {
-                                                    snackbarHostState.showSnackbar(context.getString(R.string.chat_share_failed))
-                                                }
-                                            }
-                                        }
-                                    },
-                                    leadingIcon = {
-                                        Icon(Lucide.Share2, contentDescription = null)
-                                    }
-                                )
-                            }
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.menu_export_session)) },
-                                onClick = {
-                                    showMenu = false
-                                    val slug = uiState.sessionTitle
-                                        .take(30)
-                                        .replace(Regex("[^a-zA-Z0-9_-]"), "_")
-                                        .ifBlank { "session" }
-                                    exportLauncher.launch("$slug.json")
-                                },
-                                leadingIcon = {
-                                    Icon(Lucide.FileDown, contentDescription = null)
-                                }
-                            )
-                        }
+                        SessionMenu()
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = Color.Transparent,
+                    scrolledContainerColor = Color.Transparent,
                 )
             )
                 AppLoadingEdge(
-                    active = uiState.isLoading && uiState.messages.isEmpty(),
+                    active = (uiState.isLoading || isServerConnecting) && uiState.messages.isEmpty(),
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
             }
@@ -2155,18 +2297,48 @@ fun ChatScreen(
                 }
             }
             }
+            }
         },
         bottomBar = {
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val inputWidth = if (showDockedTerminal) (maxWidth - TerminalDividerWidth).coerceAtLeast(0.dp) * (1f - terminalPaneFraction) else maxWidth
+            Box(Modifier.width(inputWidth)) {
+            Column {
+                val runningTool = uiState.messages.any { message ->
+                    message.parts.any { it is Part.Tool && it.state is ToolState.Running }
+                }
+                if (!isTerminalMode && uiState.sessionLoaded && (isBusy || runningTool)) {
+                    val density = LocalDensity.current
+                    val bottomInset = WindowInsets.navigationBars.getBottom(density)
+                    Column(Modifier.then(acrylicModifier).then(chatWidthModifier).padding(
+                        bottom = with(density) { (bottomInset * panelCollapse).toDp() },
+                    )) {
+                        if (uiState.sessionStatus is SessionStatus.Retry) {
+                            RetryStatusBanner(uiState.sessionStatus as SessionStatus.Retry)
+                        } else {
+                            SessionActivityRow(uiState.messages)
+                        }
+                    }
+                }
+            CollapsingChatPanel(panelCollapse, top = false, backgroundModifier = if (!isTerminalMode) acrylicModifier else Modifier) {
             val modelLabel = if (uiState.selectedModelId != null && uiState.providers.isNotEmpty()) {
                 val provider = uiState.providers.find { it.id == uiState.selectedProviderId }
                 val model = provider?.models?.get(uiState.selectedModelId)
                 model?.name ?: uiState.selectedModelId ?: ""
-            } else ""
+            } else if (uiState.providers.isNotEmpty()) stringResource(R.string.chat_select_model) else ""
             val hasRunningTool = uiState.messages.any { message ->
                 message.parts.any { part -> part is Part.Tool && part.state is ToolState.Running }
             }
 
             if (!isTerminalMode && uiState.sessionLoaded && uiState.parentSessionId == null) {
+            Column(chatWidthModifier) {
+            InboxQueueBar(queuedInbox, inboxActions, isServerConnected) { id, delivery ->
+                viewModel.updateInboxItem(id, delivery) { success ->
+                    if (!success) coroutineScope.launch {
+                        snackbarHostState.showSnackbar(context.getString(R.string.chat_inbox_action_failed))
+                    }
+                }
+            }
             ChatInputBar(
                 textFieldValue = inputText,
                 onTextFieldValueChange = { newValue ->
@@ -2225,8 +2397,6 @@ fun ChatScreen(
                 isDictating = isDictating,
                 isSending = uiState.isSending,
                 isBusy = isWorkingSessionStatus(uiState.sessionStatus) || hasRunningTool,
-                sessionStatus = uiState.sessionStatus,
-                messages = uiState.messages,
                 attachments = attachments,
                 onAttach = { showAttachmentOptions = true },
                 onRemoveAttachment = { index ->
@@ -2375,16 +2545,24 @@ fun ChatScreen(
                 isServerConnected = isServerConnected,
             )
             }
+            }
+            }
+            }
+            }
+            }
         }
     ) { padding ->
+        Row(Modifier.fillMaxSize().onSizeChanged { workspaceWidthPx = it.width.coerceAtLeast(1) }) {
         Box(
             modifier = Modifier
+                .weight(if (showDockedTerminal) 1f - terminalPaneFraction else 1f)
                 .fillMaxSize()
-                .padding(if (isTerminalMode && isServerConnected) PaddingValues(0.dp) else padding)
+                .padding(if ((isTerminalMode && isServerConnected) || (!isTerminalMode && uiState.messages.isNotEmpty())) PaddingValues(0.dp) else padding)
         ) {
             when {
+                isTerminalMode && desktopTerminalControls -> DesktopTerminal(Modifier.fillMaxSize())
                 isTerminalMode -> {
-                    val overlayHeightDp = with(density) { terminalOverlayHeightPx.toDp() }
+                    val overlayHeightDp = if (desktopExtraKeys) with(density) { terminalOverlayHeightPx.toDp() } else 0.dp
 
                     ModalNavigationDrawer(
                         drawerState = terminalDrawerState,
@@ -2646,13 +2824,17 @@ fun ChatScreen(
                                      ),
                                  ),
                          ) {
+                            key(activeTerminalTabId) {
+                            val renderedTerminalId = activeTerminalTabId
                             SessionTerminalInline(
                                 emulator = viewModel.terminalEmulator,
                                 terminalVersion = terminalVersion,
                                 connected = terminalConnected,
                                 focusRequester = terminalFocusRequester,
-                                onSendInput = ::sendTerminalChunk,
+                                onSendInput = { if (viewModel.activeTerminalTabId.value == renderedTerminalId) sendTerminalChunk(it) },
                                 onPaste = ::pasteClipboardToTerminal,
+                                onSendRawInput = { text -> renderedTerminalId?.let { viewModel.sendTerminalTabInput(it, text) } },
+                                onInputFocusChange = { if (viewModel.activeTerminalTabId.value == renderedTerminalId) terminalInputFocused = it },
                                 onResize = { cols, rows ->
                                     viewModel.resizeTerminal(cols, rows)
                                 },
@@ -2661,6 +2843,7 @@ fun ChatScreen(
                                 contentBottomPadding = overlayHeightDp,
                                 modifier = Modifier.fillMaxSize()
                             )
+                            }
 
                             if (activeTerminalTab != null && !activeTerminalTab.connected) {
                                 Surface(
@@ -2754,10 +2937,14 @@ fun ChatScreen(
                                     .align(Alignment.CenterStart)
                                     .fillMaxHeight()
                                     .padding(bottom = overlayHeightDp)
-                                    .width(18.dp)
-                                    .zIndex(0f)
+                                    .width(24.dp)
+                                    .zIndex(2f)
                                     .pointerInput(terminalDrawerState) {
                                         detectTapGestures(
+                                            onTap = {
+                                                showTerminalPanelHintOverlay = false
+                                                coroutineScope.launch { terminalDrawerState.open() }
+                                            },
                                             onLongPress = {
                                                 if (!terminalDrawerState.isOpen) {
                                                     showTerminalPanelHintOverlay = false
@@ -2789,7 +2976,7 @@ fun ChatScreen(
                                 }
                             }
 
-                        TerminalKeyboardOverlay(
+                        if (desktopExtraKeys) TerminalKeyboardOverlay(
                             connected = terminalConnected,
                             ctrlLatched = terminalCtrlLatched,
                             altLatched = terminalAltLatched,
@@ -2837,7 +3024,19 @@ fun ChatScreen(
                         }
                     }
                 }
-                uiState.messages.isEmpty() && !uiState.isLoading -> {
+                !uiState.sessionLoaded && uiState.messages.isEmpty() -> {
+                    if (isServerConnected && !isServerConnecting) Text(
+                        text = stringResource(when {
+                            isServerConnecting -> R.string.home_connecting
+                            isServerConnected -> R.string.loading
+                            else -> R.string.session_tabs_offline
+                        }),
+                        modifier = Modifier.align(Alignment.Center).padding(32.dp),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                uiState.messages.isEmpty() && !uiState.isLoading && historyLoaded && isServerConnected -> {
                     Column(
                         modifier = Modifier
                             .align(Alignment.Center)
@@ -2902,8 +3101,10 @@ fun ChatScreen(
                     }
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier.fillMaxSize().then(chatWidthModifier).haze(chatHaze).nestedScroll(readingScroll),
+                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp,
+                            top = padding.calculateTopPadding() + 8.dp,
+                            bottom = padding.calculateBottomPadding() + 8.dp),
                         verticalArrangement = Arrangement.spacedBy(messageSpacing)
                     ) {
                         // "Load earlier messages" button at the top
@@ -3085,7 +3286,45 @@ fun ChatScreen(
                                             }
                                         },
                                     )
-                                    is PendingInteraction.Question -> QuestionCard(
+                                    is PendingInteraction.Question -> if (interaction.request.questions.isEmpty()) {
+                                        Card(
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = if (isAmoledTheme()) Color.Black else MaterialTheme.colorScheme.surfaceVariant,
+                                            ),
+                                            border = if (isAmoledTheme()) BorderStroke(
+                                                1.dp,
+                                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f),
+                                            ) else null,
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(12.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                ) {
+                                                    Text(
+                                                        stringResource(R.string.chat_question_label),
+                                                        style = MaterialTheme.typography.titleSmall,
+                                                    )
+                                                    Text(position, style = MaterialTheme.typography.labelSmall)
+                                                }
+                                                Text(
+                                                    stringResource(R.string.question_unsupported_form),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                )
+                                                AppPrimaryButton(
+                                                    onClick = onOpenInWebView,
+                                                    modifier = Modifier.align(Alignment.End),
+                                                ) {
+                                                    Text(stringResource(R.string.menu_open_in_web))
+                                                }
+                                            }
+                                        }
+                                    } else QuestionCard(
                                         question = interaction.request,
                                         position = position,
                                         onSubmit = { answers, onResult ->
@@ -3136,7 +3375,7 @@ fun ChatScreen(
                             },
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
-                                .padding(bottom = 8.dp),
+                                .padding(bottom = padding.calculateBottomPadding() + 8.dp),
                             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                             contentColor = MaterialTheme.colorScheme.onSurface
                         ) {
@@ -3149,6 +3388,13 @@ fun ChatScreen(
                     }
                 }
             }
+        }
+        if (showDockedTerminal) {
+            TerminalPaneDivider { delta ->
+                    terminalPaneFraction = (terminalPaneFraction - delta / workspaceWidthPx).coerceIn(0.25f, 0.65f)
+            }
+            DesktopTerminal(Modifier.weight(terminalPaneFraction).fillMaxHeight().padding(top = padding.calculateTopPadding()))
+        }
         }
     }
 
@@ -3707,7 +3953,7 @@ internal fun terminalZoomFontSize(startFontSizeSp: Float, scale: Float): Float {
 internal fun terminalGestureIsPinch(pressedPointerCount: Int): Boolean = pressedPointerCount >= 2
 
 @androidx.annotation.StringRes
-private fun terminalTabStateLabel(state: TerminalTabState): Int = when (state) {
+internal fun terminalTabStateLabel(state: TerminalTabState): Int = when (state) {
     TerminalTabState.Starting -> R.string.chat_terminal_starting
     TerminalTabState.Connected -> R.string.chat_terminal_connected
     TerminalTabState.Reconnecting -> R.string.chat_terminal_reconnecting
@@ -3716,7 +3962,7 @@ private fun terminalTabStateLabel(state: TerminalTabState): Int = when (state) {
 }
 
 @androidx.annotation.StringRes
-private fun terminalRecoveryLabel(action: TerminalRecoveryAction): Int = when (action) {
+internal fun terminalRecoveryLabel(action: TerminalRecoveryAction): Int = when (action) {
     TerminalRecoveryAction.Reconnect -> R.string.chat_terminal_reconnect_tab
     TerminalRecoveryAction.Restart -> R.string.chat_terminal_restart_tab
     TerminalRecoveryAction.None -> R.string.chat_terminal_connected
@@ -3743,13 +3989,17 @@ private data class TerminalMetrics(
 )
 
 @Composable
-private fun SessionTerminalInline(
+internal fun SessionTerminalInline(
     emulator: TerminalEmulator,
     terminalVersion: Long,
     connected: Boolean,
     focusRequester: FocusRequester,
     onSendInput: (String) -> Unit,
     onPaste: () -> Unit,
+    onSendRawInput: (String) -> Unit = onSendInput,
+    desktopInput: Boolean = false,
+    onInputFocusChange: (Boolean) -> Unit = {},
+    viewport: TerminalViewportState? = null,
     onResize: (cols: Int, rows: Int) -> Unit,
     fontSizeSp: Float,
     onFontSizeChange: (Float) -> Unit,
@@ -3765,10 +4015,16 @@ private fun SessionTerminalInline(
         android.view.ViewConfiguration.get(context).scaledMinimumFlingVelocity.toFloat()
     }
     val coroutineScope = rememberCoroutineScope()
+    val terminalClipboard = LocalClipboardManager.current
+    val viewportState = viewport ?: remember(emulator) { TerminalViewportState() }
+    val desktopInputState = viewportState.input
+    val terminalHasFocus = desktopInputState.focused && LocalWindowInfo.current.isWindowFocused
+    LaunchedEffect(terminalHasFocus, connected) { onInputFocusChange(terminalHasFocus && connected) }
+    var nativeSelectionCopy by remember { mutableStateOf<(() -> Unit)?>(null) }
     var inputCapture by remember { mutableStateOf(TextFieldValue("")) }
     var sentInputCapture by remember { mutableStateOf("") }
-    val terminalScrollState = rememberScrollState()
-    var terminalFollowMode by rememberSaveable { mutableStateOf(true) }
+    val terminalScrollState = viewportState.scroll
+    var terminalFollowMode by viewportState.follow
     var terminalFlingJob by remember { mutableStateOf<Job?>(null) }
     var terminalLifecycleActive by remember {
         mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
@@ -3793,6 +4049,7 @@ private fun SessionTerminalInline(
 
             override fun hide() {
                 baseTextToolbar.hide()
+                nativeSelectionCopy = null
             }
 
             override fun showMenu(
@@ -3802,6 +4059,7 @@ private fun SessionTerminalInline(
                 onCutRequested: (() -> Unit)?,
                 onSelectAllRequested: (() -> Unit)?
             ) {
+                nativeSelectionCopy = onCopyRequested
                 baseTextToolbar.showMenu(
                     rect = rect,
                     onCopyRequested = onCopyRequested,
@@ -3834,11 +4092,30 @@ private fun SessionTerminalInline(
         )
     }
 
+    fun copyTerminalSelection() {
+        val text = desktopInputState.selectedText()
+        if (text.isNotEmpty()) terminalClipboard.setText(AnnotatedString(text)) else nativeSelectionCopy?.invoke()
+    }
+    fun scrollTerminal(delta: Float) {
+        terminalFlingJob?.cancel()
+        terminalScrollState.dispatchRawDelta(delta)
+        terminalFollowMode = terminalScrollState.value >= terminalScrollState.maxValue - 2
+    }
+    DisposableEffect(Unit) { onDispose { onInputFocusChange(false) } }
     Column(
         modifier = modifier
             .background(Color.Black)
+            .onFocusChanged { desktopInputState.focused = it.hasFocus }
+            .onPreviewKeyEvent { event ->
+                desktopInputState.key(event.nativeKeyEvent, connected, emulator.cursorKeysApplicationMode,
+                    onSendInput, ::copyTerminalSelection, onPaste,
+                    onZoom = { onFontSizeChange(terminalZoomFontSize(latestFontSizeSp, it)) },
+                    onResetZoom = { onFontSizeChange(DEFAULT_TERMINAL_FONT_SIZE_SP) }, onScroll = ::scrollTerminal)
+            }
+            .focusGroup()
             .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
+        TerminalKeyboardInput {
         BasicTextField(
             value = inputCapture,
             onValueChange = { next ->
@@ -3868,91 +4145,13 @@ private fun SessionTerminalInline(
             },
             modifier = Modifier
                 .size(1.dp)
-                .focusRequester(focusRequester)
-                .onPreviewKeyEvent { event ->
-                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                    when (event.key) {
-                        Key.Enter, Key.NumPadEnter -> {
-                            onSendInput("\r")
-                            true
-                        }
-                        Key.Tab -> {
-                            onSendInput("\t")
-                            true
-                        }
-                        Key.Backspace -> {
-                            onSendInput("\u007F")
-                            true
-                        }
-                        else -> {
-                            val native = event.nativeKeyEvent
-                            val unicode = native.unicodeChar
-                            if (unicode > 0 && (unicode and android.view.KeyCharacterMap.COMBINING_ACCENT) == 0) {
-                                if (native.isCtrlPressed) {
-                                    val lower = unicode.toChar().lowercaseChar()
-                                    if (lower in 'a'..'z') {
-                                        val ctrl = (lower.code - 'a'.code + 1).toChar().toString()
-                                        onSendInput(ctrl)
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    onSendInput(String(Character.toChars(unicode)))
-                                    true
-                                }
-                            } else {
-                                val baseLetter = when (event.key) {
-                                    Key.A -> 'a'
-                                    Key.B -> 'b'
-                                    Key.C -> 'c'
-                                    Key.D -> 'd'
-                                    Key.E -> 'e'
-                                    Key.F -> 'f'
-                                    Key.G -> 'g'
-                                    Key.H -> 'h'
-                                    Key.I -> 'i'
-                                    Key.J -> 'j'
-                                    Key.K -> 'k'
-                                    Key.L -> 'l'
-                                    Key.M -> 'm'
-                                    Key.N -> 'n'
-                                    Key.O -> 'o'
-                                    Key.P -> 'p'
-                                    Key.Q -> 'q'
-                                    Key.R -> 'r'
-                                    Key.S -> 's'
-                                    Key.T -> 't'
-                                    Key.U -> 'u'
-                                    Key.V -> 'v'
-                                    Key.W -> 'w'
-                                    Key.X -> 'x'
-                                    Key.Y -> 'y'
-                                    Key.Z -> 'z'
-                                    else -> null
-                                }
-                                if (baseLetter != null) {
-                                    val upper = native.isShiftPressed.xor(native.isCapsLockOn)
-                                    val out = if (upper) baseLetter.uppercaseChar() else baseLetter
-                                    if (native.isCtrlPressed) {
-                                        val ctrl = (baseLetter.code - 'a'.code + 1).toChar().toString()
-                                        onSendInput(ctrl)
-                                    } else {
-                                        onSendInput(out.toString())
-                                    }
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
-                        }
-                    }
-                },
+                .focusRequester(focusRequester),
             singleLine = false,
             textStyle = terminalStyle,
             keyboardOptions = KeyboardOptions(
                 capitalization = KeyboardCapitalization.None,
                 autoCorrectEnabled = false,
+                showKeyboardOnFocus = false,
                 imeAction = ImeAction.Send
             ),
             keyboardActions = KeyboardActions(
@@ -3961,6 +4160,7 @@ private fun SessionTerminalInline(
                 onGo = { onSendInput("\r") }
             )
         )
+        }
 
         BoxWithConstraints(
             modifier = Modifier
@@ -3999,10 +4199,10 @@ private fun SessionTerminalInline(
                     rowHeightPx = rowHeightPx,
                     baselinePx = -fm.ascent,
                     columns = if (viewportWidthPx > 0) {
-                        (viewportWidthPx / charWidthPx).toInt().coerceAtLeast(20)
+                        (viewportWidthPx / charWidthPx).toInt().coerceAtLeast(2)
                     } else 80,
                     rows = if (viewportHeightPx > 0) {
-                        (viewportHeightPx / rowHeightPx).coerceAtLeast(8)
+                        (viewportHeightPx / rowHeightPx).coerceAtLeast(1)
                     } else 24,
                 )
             }
@@ -4085,13 +4285,21 @@ private fun SessionTerminalInline(
             }
 
             val terminalBgColor = Color.Black
+            SideEffect { desktopInputState.pageHeight = viewportHeightPx.toFloat() }
+            val mouseInput = terminalMouseInput(desktopInputState, emulator,
+                TerminalMouseGrid(charWidthPx, rowHeightPx, termCols, termRows, firstVisibleRow, totalRows), connected,
+                onFocus = { focusRequester.requestFocus(); keyboard?.hide() }, onSend = onSendRawInput,
+                onScroll = ::scrollTerminal, onZoom = { onFontSizeChange(terminalZoomFontSize(latestFontSizeSp, it)) })
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .testTag("terminalViewport")
                     .semantics { text = accessibilityOutput }
+                    .then(mouseInput)
                     .pointerInput(Unit) {
                         awaitEachGesture {
                             val firstDown = awaitFirstDown(requireUnconsumed = false)
+                            if (firstDown.type == PointerType.Mouse) return@awaitEachGesture
                             terminalFlingJob?.cancel()
                             terminalFlingJob = null
                             val velocityTracker = VelocityTracker().apply {
@@ -4234,6 +4442,42 @@ private fun SessionTerminalInline(
                     }
                 }
 
+                val selectionStart = desktopInputState.start
+                val selectionEnd = desktopInputState.end
+                if (selectionStart != null && selectionEnd != null && selectionStart != selectionEnd) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        val start = minOf(selectionStart, selectionEnd)
+                        val end = maxOf(selectionStart, selectionEnd)
+                        val firstRow = maxOf(start.row, firstVisibleRow)
+                        val lastRow = minOf(end.row, firstVisibleRow + termRows - 1)
+                        for (row in firstRow..lastRow) {
+                            val from = if (row == start.row) start.column else 0
+                            val to = if (row == end.row) end.column else termCols
+                            drawRect(Color(0x664FC3F7),
+                                topLeft = Offset(from * charWidthPx, ((row - firstVisibleRow) * rowHeightPx).toFloat()),
+                                size = androidx.compose.ui.geometry.Size((to - from).coerceAtLeast(0) * charWidthPx, rowHeightPx.toFloat()))
+                        }
+                    }
+                }
+
+                Box(Modifier.offset { androidx.compose.ui.unit.IntOffset(desktopInputState.menuPosition.x.toInt(), desktopInputState.menuPosition.y.toInt()) }) {
+                    DropdownMenu(desktopInputState.menu, { desktopInputState.menu = false }) {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.chat_copy)) },
+                            enabled = desktopInputState.selectedText().isNotEmpty() || nativeSelectionCopy != null,
+                            onClick = ::copyTerminalSelection)
+                        DropdownMenuItem(text = { Text(stringResource(R.string.terminal_paste)) }, enabled = connected,
+                            onClick = { onPaste(); focusRequester.requestFocus() })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.terminal_select_all)) },
+                            onClick = { desktopInputState.selectAll(emulator.renderSelectionText(0, totalRows).lines()) })
+                        HorizontalDivider()
+                        DropdownMenuItem(text = { Text(stringResource(R.string.terminal_zoom_in)) },
+                            onClick = { onFontSizeChange(terminalZoomFontSize(fontSizeSp, 1.1f)) })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.terminal_zoom_out)) },
+                            onClick = { onFontSizeChange(terminalZoomFontSize(fontSizeSp, 1f / 1.1f)) })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.terminal_zoom_reset)) }, onClick = { onFontSizeChange(DEFAULT_TERMINAL_FONT_SIZE_SP) })
+                    }
+                }
+
                 // Invisible text layer for native text selection (long-press copy).
                 // We strip all explicit span colors so text is invisible, but the
                 // Compose SelectionContainer still draws a visible selection highlight.
@@ -4286,7 +4530,7 @@ private fun SessionTerminalInline(
                     connected &&
                     terminalLifecycleActive &&
                     emulator.cursorVisible &&
-                    (!emulator.cursorBlinkEnabled || cursorBlinkOn) &&
+                    (!emulator.cursorBlinkEnabled || !terminalHasFocus || cursorBlinkOn) &&
                     cursorPos != null
                 ) {
                     val cursorCol = cursorPos.second.coerceIn(0, (termCols - 1).coerceAtLeast(0))
@@ -4307,7 +4551,8 @@ private fun SessionTerminalInline(
                                 .size(width = 2.dp, height = cursorH)
                         },
                     )
-                    Box(modifier = cursorModifier.background(Color(0xFFD3D7CF)))
+                    Box(modifier = if (terminalHasFocus) cursorModifier.background(Color(0xFFD3D7CF))
+                        else cursorModifier.border(1.dp, Color(0xFF888A85)))
                 }
             }
         }
@@ -4638,13 +4883,13 @@ private fun applyTerminalModifiers(input: String, ctrl: Boolean, alt: Boolean): 
     return out
 }
 
-private data class FnBindingResult(
+internal data class FnBindingResult(
     val output: String,
     val showVolumeUi: Boolean = false,
-    val toggleKeyboard: Boolean = false,
+    val toggleToolbar: Boolean = false,
 )
 
-private fun applyTermuxFnBindings(input: String, cursorApp: Boolean): FnBindingResult {
+internal fun applyTermuxFnBindings(input: String, cursorApp: Boolean): FnBindingResult {
     if (input.isEmpty()) return FnBindingResult(output = "")
 
     val up = if (cursorApp) "\u001BOA" else "\u001B[A"
@@ -4654,7 +4899,7 @@ private fun applyTermuxFnBindings(input: String, cursorApp: Boolean): FnBindingR
 
     val out = StringBuilder()
     var showVolumeUi = false
-    var toggleKeyboard = false
+    var toggleToolbar = false
     for (ch in input) {
         when (ch.lowercaseChar()) {
             'w' -> out.append(up)
@@ -4693,7 +4938,7 @@ private fun applyTermuxFnBindings(input: String, cursorApp: Boolean): FnBindingR
             // Termux also handles FN+v (volume UI) and FN+q/k (toggle toolbar),
             // which are app-specific actions. We consume them with no terminal output.
             'v' -> showVolumeUi = true
-            'q', 'k' -> toggleKeyboard = true
+            'q', 'k' -> toggleToolbar = true
 
             else -> Unit
         }
@@ -4701,20 +4946,21 @@ private fun applyTermuxFnBindings(input: String, cursorApp: Boolean): FnBindingR
     return FnBindingResult(
         output = out.toString(),
         showVolumeUi = showVolumeUi,
-        toggleKeyboard = toggleKeyboard,
+        toggleToolbar = toggleToolbar,
     )
 }
 
-private fun ctrlTransform(ch: Char): Char {
+internal fun ctrlTransform(ch: Char): Char {
     return when {
         ch in 'a'..'z' -> (ch.code - 96).toChar()
         ch in 'A'..'Z' -> (ch.code - 64).toChar()
-        ch == ' ' -> 0.toChar()
-        ch == '[' -> 27.toChar()
-        ch == '\\' -> 28.toChar()
-        ch == ']' -> 29.toChar()
-        ch == '^' -> 30.toChar()
-        ch == '_' -> 31.toChar()
+        ch == ' ' || ch == '2' -> 0.toChar()
+        ch == '[' || ch == '3' -> 27.toChar()
+        ch == '\\' || ch == '4' -> 28.toChar()
+        ch == ']' || ch == '5' -> 29.toChar()
+        ch == '^' || ch == '6' -> 30.toChar()
+        ch == '_' || ch == '7' || ch == '/' -> 31.toChar()
+        ch == '8' -> 127.toChar()
         else -> ch
     }
 }
@@ -5603,7 +5849,8 @@ private fun MarkdownContent(
             colors = colors,
             typography = typography,
             flavour = ChatMarkdownFlavour,
-            annotator = ChatMarkdownAnnotator,
+            annotator = dev.minios.ocremote.ui.components.rememberInteractiveMarkdownLinks(ChatMarkdownAnnotator,
+                if (isUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary),
             components = components,
             imageTransformer = clickableImageTransformer,
             modifier = Modifier.fillMaxWidth()
@@ -8052,6 +8299,36 @@ private fun RetryStatusBanner(retry: SessionStatus.Retry) {
     }
 }
 
+@Composable
+private fun SessionActivityRow(messages: List<ChatMessage>) {
+    val tool = messages.asReversed().firstNotNullOfOrNull { message ->
+        message.parts.filterIsInstance<Part.Tool>().lastOrNull { it.state is ToolState.Running }
+    }
+    val title = (tool?.state as? ToolState.Running)?.title
+    val text = title ?: when (tool?.tool) {
+        null -> stringResource(R.string.chat_tool_thinking)
+        "read" -> stringResource(R.string.chat_tool_reading_file)
+        "write" -> stringResource(R.string.chat_tool_writing_file)
+        "edit" -> stringResource(R.string.chat_tool_editing_file)
+        "bash" -> stringResource(R.string.chat_tool_running_command)
+        "glob", "list" -> stringResource(R.string.chat_tool_searching_files)
+        "grep" -> stringResource(R.string.chat_tool_searching_code)
+        "webfetch" -> stringResource(R.string.chat_tool_fetching_url)
+        "task" -> stringResource(R.string.chat_tool_running_subagent)
+        "todowrite" -> stringResource(R.string.chat_tool_updating_tasks)
+        else -> stringResource(R.string.chat_tool_running_tool, tool.tool)
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        PulsingDotsIndicator(dotSize = 4.dp, dotSpacing = 3.dp, color = MaterialTheme.colorScheme.tertiary)
+        Text(text, style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatInputBar(
@@ -8063,8 +8340,6 @@ private fun ChatInputBar(
     isDictating: Boolean = false,
     isSending: Boolean,
     isBusy: Boolean = false,
-    sessionStatus: SessionStatus = SessionStatus.Idle,
-    messages: List<ChatMessage> = emptyList(),
     attachments: List<ImageAttachment> = emptyList(),
     onAttach: () -> Unit = {},
     onRemoveAttachment: (Int) -> Unit = {},
@@ -8092,6 +8367,9 @@ private fun ChatInputBar(
 ) {
     val isAmoled = isAmoledTheme()
     val isShellMode = inputMode == ChatInputMode.SHELL
+    val visibleWindow = dev.minios.ocremote.ui.components.rememberVisibleWindowSize()
+    val compactHeight = visibleWindow.height < 480.dp
+    val suggestionMaxHeight = dev.minios.ocremote.ui.components.composerExtraHeight(visibleWindow.height)
     // Rotate placeholder hint every 4 seconds
     val hintIndex = remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) {
@@ -8115,7 +8393,6 @@ private fun ChatInputBar(
         ComposerAction.DISABLED
     }
     val canSend = action == ComposerAction.SEND
-    val retryStatus = sessionStatus as? SessionStatus.Retry
     var showContextDetails by remember { mutableStateOf(false) }
     var previewAttachmentIndex by remember { mutableStateOf(-1) }
     var showVariantMenu by remember { mutableStateOf(false) }
@@ -8151,9 +8428,6 @@ private fun ChatInputBar(
             thickness = 0.5.dp
         )
 
-        retryStatus?.let { retry ->
-            RetryStatusBanner(retry)
-        }
 
         // Slash command suggestions popup (scrollable, max 40% screen height)
         AnimatedVisibility(
@@ -8161,13 +8435,10 @@ private fun ChatInputBar(
             enter = fadeIn(),
             exit = fadeOut()
         ) {
-            val configuration = LocalConfiguration.current
-            val maxHeight = (configuration.screenHeightDp * 0.4f).dp
-
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = maxHeight)
+                    .heightIn(max = suggestionMaxHeight)
                     .background(if (isAmoled) Color.Black else MaterialTheme.colorScheme.surfaceContainerHigh)
                     .padding(vertical = 4.dp)
             ) {
@@ -8206,17 +8477,14 @@ private fun ChatInputBar(
 
         // @ file mention suggestions popup
         AnimatedVisibility(
-            visible = !isShellMode && fileSearchResults.isNotEmpty(),
+            visible = !isShellMode && !showSlashSuggestions && fileSearchResults.isNotEmpty(),
             enter = fadeIn(),
             exit = fadeOut()
         ) {
-            val configuration = LocalConfiguration.current
-            val maxHeight = (configuration.screenHeightDp * 0.4f).dp
-
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = maxHeight)
+                    .heightIn(max = suggestionMaxHeight)
                     .background(if (isAmoled) Color.Black else MaterialTheme.colorScheme.surfaceContainerHigh)
                     .padding(vertical = 4.dp)
             ) {
@@ -8289,64 +8557,6 @@ private fun ChatInputBar(
             contextPercentage >= 90 -> MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
             contextPercentage >= 70 -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.7f)
             else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.75f)
-        }
-        if (isBusy && retryStatus == null) {
-            val lastRunningTool = if (isBusy) {
-                messages.asReversed().firstNotNullOfOrNull { message ->
-                    message.parts.filterIsInstance<Part.Tool>().lastOrNull { it.state is ToolState.Running }
-                }
-            } else null
-
-            val statusText = if (isBusy) {
-                if (lastRunningTool != null) {
-                    val title = (lastRunningTool.state as ToolState.Running).title
-                    when (lastRunningTool.tool) {
-                        "read" -> title ?: stringResource(R.string.chat_tool_reading_file)
-                        "write" -> title ?: stringResource(R.string.chat_tool_writing_file)
-                        "edit" -> title ?: stringResource(R.string.chat_tool_editing_file)
-                        "bash" -> title ?: stringResource(R.string.chat_tool_running_command)
-                        "glob", "list" -> title ?: stringResource(R.string.chat_tool_searching_files)
-                        "grep" -> title ?: stringResource(R.string.chat_tool_searching_code)
-                        "webfetch" -> title ?: stringResource(R.string.chat_tool_fetching_url)
-                        "task" -> title ?: stringResource(R.string.chat_tool_running_subagent)
-                        "todowrite" -> title ?: stringResource(R.string.chat_tool_updating_tasks)
-                        else -> title ?: stringResource(R.string.chat_tool_running_tool, lastRunningTool.tool)
-                    }
-                } else {
-                    stringResource(R.string.chat_tool_thinking)
-                }
-            } else null
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .padding(top = 2.dp, bottom = 2.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Left: working status
-                if (isBusy && statusText != null) {
-                    Row(
-                        modifier = Modifier.weight(1f, fill = false),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        PulsingDotsIndicator(
-                            dotSize = 4.dp,
-                            dotSpacing = 3.dp,
-                            color = MaterialTheme.colorScheme.tertiary
-                        )
-                        Text(
-                            text = statusText,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
         }
 
         Column(
@@ -8535,8 +8745,8 @@ private fun ChatInputBar(
                         val attachment = attachments[index]
                         Box(
                             modifier = Modifier
-                                .width(if (attachment.isImage) 56.dp else 180.dp)
-                                .height(56.dp)
+                                .width(if (attachment.isImage) { if (compactHeight) 40.dp else 56.dp } else 180.dp)
+                                .height(if (compactHeight) 40.dp else 56.dp)
                                 .clip(RoundedCornerShape(10.dp))
                         ) {
                             if (attachment.isImage) {
@@ -8575,7 +8785,7 @@ private fun ChatInputBar(
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                             )
-                                            if (attachment.sizeBytes > 0) {
+                                            if (attachment.sizeBytes > 0 && !compactHeight) {
                                                 Text(
                                                     text = formatFileSize(attachment.sizeBytes),
                                                     style = MaterialTheme.typography.labelSmall,
@@ -8740,7 +8950,7 @@ private fun ChatInputBar(
                             fontFamily = if (isShellMode) FontFamily.Monospace else FontFamily.Default
                         ),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-                        maxLines = 5,
+                        maxLines = if (compactHeight) 2 else 5,
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         visualTransformation = visualTransformation,
                         decorationBox = { innerTextField ->
@@ -8925,7 +9135,7 @@ private fun ContextUsageDialog(
         modifier = Modifier.fillMaxWidth().widthIn(max = 560.dp),
     ) {
             Column(
-                modifier = Modifier.padding(20.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState()).padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(stringResource(R.string.chat_context_details), style = MaterialTheme.typography.titleMedium)
@@ -8992,7 +9202,8 @@ private fun ContextUsageDialog(
 @Composable
 private fun ContextTokenRow(label: String, tokens: Int, raw: Boolean = false, value: String? = null) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(label, modifier = Modifier.weight(1f).padding(end = 12.dp),
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value ?: if (raw) tokens.toString() else formatTokenCount(tokens), style = MaterialTheme.typography.bodySmall)
     }
 }

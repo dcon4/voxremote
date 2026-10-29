@@ -18,7 +18,9 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
 import io.ktor.utils.io.readAvailable
+import io.ktor.utils.io.jvm.javaio.toInputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -33,6 +35,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.json.decodeFromJsonElement
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -92,9 +95,15 @@ class OpenCodeApi @Inject constructor(
         private const val BYTES_PER_MEGABYTE = 1024L * 1024L
     }
 
+    private val v2 = OpenCodeV2Api(httpClient, json, messageImageCache)
+
+    private suspend fun isV2(conn: ServerConnection): Boolean =
+        ServerProtocolRegistry.resolve(httpClient, json, conn) == ServerProtocol.V2
+
     // ============ Global ============
 
     suspend fun getHealth(conn: ServerConnection): ServerHealth {
+        if (isV2(conn)) return v2.health(conn)
         val response = httpClient.get("${conn.baseUrl}/global/health") {
             conn.authHeader?.let { header("Authorization", it) }
         }
@@ -107,6 +116,7 @@ class OpenCodeApi @Inject constructor(
      * GET /path
      */
     suspend fun getServerPaths(conn: ServerConnection): ServerPaths {
+        if (isV2(conn)) return v2.paths(conn)
         return httpClient.get("${conn.baseUrl}/path") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -115,6 +125,7 @@ class OpenCodeApi @Inject constructor(
     // ============ Project ============
 
     suspend fun listProjects(conn: ServerConnection): List<Project> {
+        if (isV2(conn)) return v2.projects(conn)
         return httpClient.get("${conn.baseUrl}/project") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -125,23 +136,35 @@ class OpenCodeApi @Inject constructor(
         projectId: String,
         directory: String? = null,
         workspaceId: String? = null,
-    ): List<ProjectDirectory> = httpClient.get("${conn.baseUrl}/project/$projectId/directories") {
-        conn.authHeader?.let { header("Authorization", it) }
-        directory?.let { parameter("directory", it) }
-        workspaceId?.let { parameter("workspace", it) }
-    }.body()
+    ): List<ProjectDirectory> {
+        if (isV2(conn)) {
+            val project = v2.projects(conn).firstOrNull { it.id == projectId }
+                ?: error("OpenCode project is unavailable")
+            return (listOf(project.worktree) + project.sandboxes).filter { it.isNotBlank() }
+                .distinct().map { ProjectDirectory(it) }
+        }
+        return httpClient.get("${conn.baseUrl}/project/$projectId/directories") {
+            conn.authHeader?.let { header("Authorization", it) }
+            directory?.let { parameter("directory", it) }
+            workspaceId?.let { parameter("workspace", it) }
+        }.body()
+    }
 
     suspend fun listWorkspaces(
         conn: ServerConnection,
         directory: String,
         workspaceId: String? = null,
-    ): List<WorkspaceInfo> = httpClient.get("${conn.baseUrl}/experimental/workspace") {
-        conn.authHeader?.let { header("Authorization", it) }
-        parameter("directory", directory)
-        workspaceId?.let { parameter("workspace", it) }
-    }.body()
+    ): List<WorkspaceInfo> {
+        if (isV2(conn)) return emptyList() // V2 identifies workspaces by location, not workspace IDs.
+        return httpClient.get("${conn.baseUrl}/experimental/workspace") {
+            conn.authHeader?.let { header("Authorization", it) }
+            parameter("directory", directory)
+            workspaceId?.let { parameter("workspace", it) }
+        }.body()
+    }
 
     suspend fun getCurrentProject(conn: ServerConnection): Project {
+        if (isV2(conn)) return v2.currentProject(conn)
         return httpClient.get("${conn.baseUrl}/project/current") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -154,9 +177,11 @@ class OpenCodeApi @Inject constructor(
      * GET /agent
      * Returns agents filtered to primary/visible ones for the mode selector.
      */
-    suspend fun listAgents(conn: ServerConnection): List<AgentInfo> {
+    suspend fun listAgents(conn: ServerConnection, directory: String? = null): List<AgentInfo> {
+        if (isV2(conn)) return v2.agents(conn, directory)
         return httpClient.get("${conn.baseUrl}/agent") {
             conn.authHeader?.let { header("Authorization", it) }
+            directoryHeader(directory)
         }.body()
     }
 
@@ -197,9 +222,10 @@ class OpenCodeApi @Inject constructor(
     // ============ Session ============
 
     suspend fun listSessions(conn: ServerConnection, directory: String? = null): List<Session> {
+        if (isV2(conn)) return v2.sessions(conn, directory)
         return httpClient.get("${conn.baseUrl}/session") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
             parameter("roots", "true")
         }.body()
     }
@@ -208,9 +234,10 @@ class OpenCodeApi @Inject constructor(
         conn: ServerConnection,
         directory: String? = null,
     ): Map<String, SessionStatus> {
+        if (isV2(conn)) return v2.statuses(conn)
         val payload: JsonObject = httpClient.get("${conn.baseUrl}/session/status") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
         }.body()
         return payload.mapValues { (_, value) ->
             val status = value.jsonObject
@@ -227,10 +254,26 @@ class OpenCodeApi @Inject constructor(
     }
 
     suspend fun getSession(conn: ServerConnection, sessionId: String, directory: String? = null): Session {
+        if (isV2(conn)) return v2.session(conn, sessionId)
         return httpClient.get("${conn.baseUrl}/session/$sessionId") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
         }.body()
+    }
+
+    suspend fun listSessionInbox(conn: ServerConnection, sessionId: String): List<V2InboxItem> {
+        if (!isV2(conn)) return emptyList()
+        return json.decodeFromJsonElement(v2.inbox(conn, sessionId))
+    }
+
+    suspend fun cancelSessionInbox(conn: ServerConnection, sessionId: String, inboxId: String) {
+        check(isV2(conn)) { "Inbox controls require OpenCode V2" }
+        v2.cancelInbox(conn, sessionId, inboxId)
+    }
+
+    suspend fun changeSessionInboxDelivery(conn: ServerConnection, sessionId: String, inboxId: String, delivery: String) {
+        check(isV2(conn)) { "Inbox controls require OpenCode V2" }
+        v2.changeInboxDelivery(conn, sessionId, inboxId, delivery)
     }
 
     suspend fun listChildSessions(
@@ -238,33 +281,37 @@ class OpenCodeApi @Inject constructor(
         sessionId: String,
         directory: String? = null,
     ): List<Session> {
+        if (isV2(conn)) return v2.sessions(conn, directory, sessionId)
         return httpClient.get("${conn.baseUrl}/session/$sessionId/children") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
         }.body()
     }
 
     /** Returns session info as raw JSON string (for export without re-serialization). */
     suspend fun getSessionRaw(conn: ServerConnection, sessionId: String): String {
+        if (isV2(conn)) return json.encodeToString(Session.serializer(), v2.session(conn, sessionId))
         return httpClient.get("${conn.baseUrl}/session/$sessionId") {
             conn.authHeader?.let { header("Authorization", it) }
         }.bodyAsText()
     }
 
     suspend fun createSession(conn: ServerConnection, title: String? = null, parentId: String? = null, directory: String? = null): Session {
+        if (isV2(conn)) return v2.createSession(conn, title, parentId, directory)
         val body = buildMap<String, String> {
             title?.let { put("title", it) }
             parentId?.let { put("parentID", it) }
         }
         return httpClient.post("${conn.baseUrl}/session") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
             contentType(ContentType.Application.Json)
             setBody(body)
         }.body()
     }
 
     suspend fun deleteSession(conn: ServerConnection, sessionId: String): Boolean {
+        if (isV2(conn)) { v2.request(conn, "/api/session/${sessionId.encodeURLPathPart()}", HttpMethod.Delete); return true }
         val response = httpClient.delete("${conn.baseUrl}/session/$sessionId") {
             conn.authHeader?.let { header("Authorization", it) }
         }
@@ -272,6 +319,7 @@ class OpenCodeApi @Inject constructor(
     }
 
     suspend fun updateSession(conn: ServerConnection, sessionId: String, title: String): Session {
+        if (isV2(conn)) return v2.updateSession(conn, sessionId, title)
         return httpClient.patch("${conn.baseUrl}/session/$sessionId") {
             conn.authHeader?.let { header("Authorization", it) }
             contentType(ContentType.Application.Json)
@@ -280,14 +328,16 @@ class OpenCodeApi @Inject constructor(
     }
 
     suspend fun abortSession(conn: ServerConnection, sessionId: String, directory: String? = null): Boolean {
+        if (isV2(conn)) return v2.action(conn, sessionId, "interrupt")
         val response = httpClient.post("${conn.baseUrl}/session/$sessionId/abort") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
         }
         return response.status.isSuccess()
     }
 
     suspend fun getSessionDiff(conn: ServerConnection, sessionId: String): List<FileDiff> {
+        if (isV2(conn)) return v2.diffs(conn, sessionId)
         return httpClient.get("${conn.baseUrl}/session/$sessionId/diff") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -298,6 +348,7 @@ class OpenCodeApi @Inject constructor(
      * POST /session/{sessionId}/share
      */
     suspend fun shareSession(conn: ServerConnection, sessionId: String): Session {
+        if (isV2(conn)) error("Session sharing is unavailable in the OpenCode v2 API")
         return httpClient.post("${conn.baseUrl}/session/$sessionId/share") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -308,6 +359,7 @@ class OpenCodeApi @Inject constructor(
      * DELETE /session/{sessionId}/share
      */
     suspend fun unshareSession(conn: ServerConnection, sessionId: String): Session {
+        if (isV2(conn)) error("Session sharing is unavailable in the OpenCode v2 API")
         return httpClient.delete("${conn.baseUrl}/session/$sessionId/share") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -323,6 +375,7 @@ class OpenCodeApi @Inject constructor(
         providerId: String,
         modelId: String
     ): Boolean {
+        if (isV2(conn)) return v2.action(conn, sessionId, "compact")
         val response = httpClient.post("${conn.baseUrl}/session/$sessionId/summarize") {
             conn.authHeader?.let { header("Authorization", it) }
             contentType(ContentType.Application.Json)
@@ -336,6 +389,7 @@ class OpenCodeApi @Inject constructor(
      * POST /session/{sessionId}/revert
      */
     suspend fun revertSession(conn: ServerConnection, sessionId: String, messageId: String): Session {
+        if (isV2(conn)) return v2.revert(conn, sessionId, messageId)
         return httpClient.post("${conn.baseUrl}/session/$sessionId/revert") {
             conn.authHeader?.let { header("Authorization", it) }
             contentType(ContentType.Application.Json)
@@ -348,6 +402,7 @@ class OpenCodeApi @Inject constructor(
      * POST /session/{sessionId}/unrevert
      */
     suspend fun unrevertSession(conn: ServerConnection, sessionId: String): Session {
+        if (isV2(conn)) return v2.unrevert(conn, sessionId)
         return httpClient.post("${conn.baseUrl}/session/$sessionId/unrevert") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -358,6 +413,7 @@ class OpenCodeApi @Inject constructor(
      * POST /session/{sessionId}/fork
      */
     suspend fun forkSession(conn: ServerConnection, sessionId: String, messageId: String? = null): Session {
+        if (isV2(conn)) return v2.fork(conn, sessionId, messageId)
         val body = buildMap<String, String> {
             messageId?.let { put("messageID", it) }
         }
@@ -380,9 +436,10 @@ class OpenCodeApi @Inject constructor(
         arguments: String = "",
         directory: String? = null
     ): Boolean {
+        if (isV2(conn)) return v2.action(conn, sessionId, "command", kotlinx.serialization.json.buildJsonObject { put("name", kotlinx.serialization.json.JsonPrimitive(command)); put("text", kotlinx.serialization.json.JsonPrimitive(arguments)) })
         val response = httpClient.post("${conn.baseUrl}/session/$sessionId/command") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
             contentType(ContentType.Application.Json)
             setBody(mapOf("command" to command, "arguments" to arguments))
         }
@@ -401,9 +458,10 @@ class OpenCodeApi @Inject constructor(
         model: ModelSelection? = null,
         directory: String? = null
     ): Boolean {
+        if (isV2(conn)) return v2.action(conn, sessionId, "shell", kotlinx.serialization.json.buildJsonObject { put("command", kotlinx.serialization.json.JsonPrimitive(command)) })
         val response = httpClient.post("${conn.baseUrl}/session/$sessionId/shell") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
             contentType(ContentType.Application.Json)
             setBody(
                 ShellRequest(
@@ -422,12 +480,13 @@ class OpenCodeApi @Inject constructor(
         cwd: String? = null,
         directory: String? = null
     ): PtyInfo {
+        if (isV2(conn)) return v2.createPty(conn, title, cwd, directory)
         if (BuildConfig.DEBUG) {
             Log.d("OpenCodeApi", "createPty: request")
         }
         val response = httpClient.post("${conn.baseUrl}/pty") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
             contentType(ContentType.Application.Json)
             setBody(PtyCreateRequest(title = title, cwd = cwd))
         }
@@ -499,6 +558,7 @@ class OpenCodeApi @Inject constructor(
     }
 
     suspend fun removePty(conn: ServerConnection, ptyId: String): Boolean {
+        if (isV2(conn)) { v2.request(conn, "/api/pty/${ptyId.encodeURLPathPart()}", HttpMethod.Delete); return true }
         val response = httpClient.delete("${conn.baseUrl}/pty/$ptyId") {
             conn.authHeader?.let { header("Authorization", it) }
         }
@@ -512,13 +572,14 @@ class OpenCodeApi @Inject constructor(
         rows: Int,
         directory: String? = null
     ): Boolean {
+        if (isV2(conn)) return v2.resizePty(conn, ptyId, cols, rows, directory)
         val body = PtyUpdateRequest(size = PtySize(rows = rows, cols = cols))
         if (BuildConfig.DEBUG) {
             Log.d("OpenCodeApi", "updatePtySize: ${cols}x$rows")
         }
         val response = httpClient.put("${conn.baseUrl}/pty/$ptyId") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
             contentType(ContentType.Application.Json)
             setBody(body)
         }
@@ -534,6 +595,7 @@ class OpenCodeApi @Inject constructor(
         cursor: Int = -1,
         directory: String? = null
     ): PtySocket {
+        if (isV2(conn)) return v2.ptySocket(conn, ptyId, cursor, directory)
         val wsBase = when {
             conn.baseUrl.startsWith("https://") -> conn.baseUrl.replaceFirst("https://", "wss://")
             conn.baseUrl.startsWith("http://") -> conn.baseUrl.replaceFirst("http://", "ws://")
@@ -543,7 +605,7 @@ class OpenCodeApi @Inject constructor(
             method = HttpMethod.Get
             url("$wsBase/pty/$ptyId/connect?cursor=$cursor")
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
         }
         return PtySocket(session)
     }
@@ -567,6 +629,8 @@ class OpenCodeApi @Inject constructor(
         before: String? = null,
         directory: String? = null,
     ): MessagePage {
+        if (isV2(conn)) return v2.messagesPage(conn, sessionId, limit, before,
+            settingsRepository.messageHistoryResponseLimitMb.first() * BYTES_PER_MEGABYTE)
         val maxResponseBytes = settingsRepository.messageHistoryResponseLimitMb.first() * BYTES_PER_MEGABYTE
         return listMessagesPage(conn, sessionId, limit, before, directory, maxResponseBytes)
     }
@@ -584,7 +648,7 @@ class OpenCodeApi @Inject constructor(
             conn.authHeader?.let { header("Authorization", it) }
             limit?.let { parameter("limit", it) }
             before?.let { parameter("before", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
         }
         val contentLength = response.contentLength()
         if (contentLength != null && contentLength > maxResponseBytes && limit != null && limit > 1) {
@@ -642,6 +706,8 @@ class OpenCodeApi @Inject constructor(
 
     /** Returns messages as raw JSON string (for export without re-serialization). */
     suspend fun listMessagesRaw(conn: ServerConnection, sessionId: String): String {
+        if (isV2(conn)) return v2.payload(conn, "/api/experimental/session/${sessionId.encodeURLPathPart()}/export")
+            .jsonObject["data"]!!.jsonObject["messages"]!!.toString()
         return httpClient.get("${conn.baseUrl}/session/$sessionId/message") {
             conn.authHeader?.let { header("Authorization", it) }
         }.bodyAsText()
@@ -660,6 +726,10 @@ class OpenCodeApi @Inject constructor(
         outputStream: java.io.OutputStream,
         onProgress: (Long) -> Unit = {}
     ) {
+        if (isV2(conn)) {
+            v2.exportToStream(conn, sessionId, outputStream, onProgress)
+            return
+        }
         var bytesWritten = 0L
         // Write session info (small, safe to hold in memory)
         val sessionJson = httpClient.get("${conn.baseUrl}/session/$sessionId") {
@@ -703,6 +773,7 @@ class OpenCodeApi @Inject constructor(
     }
 
     suspend fun getMessage(conn: ServerConnection, sessionId: String, messageId: String): MessageWithParts {
+        if (isV2(conn)) return v2.message(conn, sessionId, messageId)
         return httpClient.get("${conn.baseUrl}/session/$sessionId/message/$messageId") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -724,9 +795,10 @@ class OpenCodeApi @Inject constructor(
         variant: String? = null,
         directory: String? = null
     ) {
+        if (isV2(conn)) { v2.prompt(conn, sessionId, messageId, parts, model, agent, variant); return }
         val response = httpClient.post("${conn.baseUrl}/session/$sessionId/prompt_async") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
             contentType(ContentType.Application.Json)
             setBody(PromptRequest(
                 messageId = messageId,
@@ -748,14 +820,8 @@ class OpenCodeApi @Inject constructor(
         directory: String? = null,
         workspaceId: String? = null,
     ) {
-        val response = httpClient.post("${conn.baseUrl}/api/session/$sessionId/agent") {
-            conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { parameter("directory", it) }
-            workspaceId?.let { parameter("workspace", it) }
-            contentType(ContentType.Application.Json)
-            setBody(mapOf("agent" to agent))
-        }
-        if (!response.status.isSuccess()) throw RuntimeException("V2 agent switch failed: ${response.status}")
+        v2.action(conn, sessionId, "agent", kotlinx.serialization.json.buildJsonObject { put("agent", kotlinx.serialization.json.JsonPrimitive(agent)) })
+        return
     }
 
     suspend fun switchSessionModelV2(
@@ -766,14 +832,7 @@ class OpenCodeApi @Inject constructor(
         directory: String? = null,
         workspaceId: String? = null,
     ) {
-        val response = httpClient.post("${conn.baseUrl}/api/session/$sessionId/model") {
-            conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { parameter("directory", it) }
-            workspaceId?.let { parameter("workspace", it) }
-            contentType(ContentType.Application.Json)
-            setBody(V2ModelRef(model.providerId, model.modelId, variant))
-        }
-        if (!response.status.isSuccess()) throw RuntimeException("V2 model switch failed: ${response.status}")
+        v2.switchModel(conn, sessionId, model, variant)
     }
 
     suspend fun promptV2(
@@ -783,15 +842,21 @@ class OpenCodeApi @Inject constructor(
         directory: String? = null,
         workspaceId: String? = null,
     ): V2AdmittedPrompt {
-        val response = httpClient.post("${conn.baseUrl}/api/session/$sessionId/prompt") {
-            conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { parameter("directory", it) }
-            workspaceId?.let { parameter("workspace", it) }
-            contentType(ContentType.Application.Json)
-            setBody(request)
-        }
-        if (!response.status.isSuccess()) throw RuntimeException("V2 prompt admission failed: ${response.status}")
-        return response.body<V2DataResponse<V2AdmittedPrompt>>().data
+        val parts = listOf(PromptPart("text", text = request.prompt.text)) +
+            request.prompt.files.map { PromptPart("file", url = it.uri, filename = it.name) } +
+            request.prompt.agents.map { PromptPart("agent", text = it.name) }
+        val body = kotlinx.serialization.json.JsonObject(v2PromptBody(request.id, parts) + mapOf(
+            "delivery" to kotlinx.serialization.json.JsonPrimitive(request.delivery),
+            "resume" to kotlinx.serialization.json.JsonPrimitive(request.resume),
+        ))
+        val admitted = v2.payload(conn, "/api/session/${sessionId.encodeURLPathPart()}/prompt", HttpMethod.Post, body)
+            .jsonObject["data"]!!.jsonObject
+        return V2AdmittedPrompt(
+            admittedSeq = 0L, id = admitted["id"]!!.jsonPrimitive.content,
+            sessionId = admitted["sessionID"]!!.jsonPrimitive.content, prompt = request.prompt,
+            delivery = admitted["delivery"]!!.jsonPrimitive.content,
+            timeCreated = admitted["time"]!!.jsonObject["created"]!!.jsonPrimitive.content.toLong(),
+        )
     }
 
     // ============ Permissions ============
@@ -808,13 +873,14 @@ class OpenCodeApi @Inject constructor(
         message: String? = null,
         directory: String? = null
     ): Boolean {
+        if (isV2(conn)) return v2.replyPermission(conn, requestId, reply, message, directory)
         val body = buildMap<String, String> {
             put("reply", reply)
             message?.let { put("message", it) }
         }
         val result = httpClient.post("${conn.baseUrl}/permission/$requestId/reply") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
             contentType(ContentType.Application.Json)
             setBody(body)
         }
@@ -826,15 +892,17 @@ class OpenCodeApi @Inject constructor(
      * GET /permission
      */
     suspend fun listPendingPermissions(conn: ServerConnection, directory: String? = null): List<PermissionRequest> {
+        if (isV2(conn)) return v2.permissions(conn, directory)
         return httpClient.get("${conn.baseUrl}/permission") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
         }.body()
     }
 
     // ============ MCP ============
 
     suspend fun getMcpStatus(conn: ServerConnection): Map<String, McpStatus> {
+        if (isV2(conn)) return v2.mcp(conn)
         val response = httpClient.get("${conn.baseUrl}/mcp") {
             conn.authHeader?.let { header("Authorization", it) }
         }
@@ -853,6 +921,7 @@ class OpenCodeApi @Inject constructor(
         name: String,
         connect: Boolean,
     ): Boolean {
+        if (isV2(conn)) return v2.updateMcp(conn, name, connect)
         val action = if (connect) "connect" else "disconnect"
         val response = httpClient.post("${conn.baseUrl}/mcp/${name.encodeURLPathPart()}/$action") {
             conn.authHeader?.let { header("Authorization", it) }
@@ -862,6 +931,7 @@ class OpenCodeApi @Inject constructor(
     }
 
     suspend fun startMcpAuth(conn: ServerConnection, name: String): McpAuthStart {
+        if (isV2(conn)) error("Connect this MCP integration using the OpenCode v2 web client")
         val response = httpClient.post("${conn.baseUrl}/mcp/${name.encodeURLPathPart()}/auth") {
             conn.authHeader?.let { header("Authorization", it) }
         }
@@ -882,11 +952,12 @@ class OpenCodeApi @Inject constructor(
         answers: List<List<String>>,
         directory: String? = null
     ): Boolean {
+        if (isV2(conn)) return v2.replyQuestion(conn, requestId, answers, directory)
         val url = "${conn.baseUrl}/question/$requestId/reply"
         val bodyJson = json.encodeToString(QuestionReplyBody.serializer(), QuestionReplyBody(answers = answers))
         val result = httpClient.post(url) {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
             setBody(io.ktor.http.content.TextContent(bodyJson, ContentType.Application.Json))
         }
         Log.i(
@@ -905,10 +976,11 @@ class OpenCodeApi @Inject constructor(
         requestId: String,
         directory: String? = null
     ): Boolean {
+        if (isV2(conn)) return v2.rejectQuestion(conn, requestId, directory)
         val url = "${conn.baseUrl}/question/$requestId/reject"
         val result = httpClient.post(url) {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
         }
         Log.i(TAG, "Question reject: request=$requestId status=${result.status.value}")
         return result.status.isSuccess()
@@ -919,9 +991,10 @@ class OpenCodeApi @Inject constructor(
      * GET /question
      */
     suspend fun listPendingQuestions(conn: ServerConnection, directory: String? = null): List<QuestionRequest> {
+        if (isV2(conn)) return v2.questions(conn, directory)
         val response = httpClient.get("${conn.baseUrl}/question") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let { header("x-opencode-directory", it) }
+            directoryHeader(directory)
         }
         Log.i(TAG, "Pending questions request: status=${response.status.value}")
         return response.body()
@@ -933,9 +1006,11 @@ class OpenCodeApi @Inject constructor(
      * Get available providers and models.
      * GET /config/providers
      */
-    suspend fun getProviders(conn: ServerConnection): ProvidersResponse {
+    suspend fun getProviders(conn: ServerConnection, directory: String? = null): ProvidersResponse {
+        if (isV2(conn)) { val catalog = v2.providers(conn, directory); return ProvidersResponse(catalog.all.filter { it.id in catalog.connected }, catalog.default) }
         return httpClient.get("${conn.baseUrl}/config/providers") {
             conn.authHeader?.let { header("Authorization", it) }
+            directoryHeader(directory)
         }.body()
     }
 
@@ -944,6 +1019,7 @@ class OpenCodeApi @Inject constructor(
      * GET /provider
      */
     suspend fun listProviderCatalog(conn: ServerConnection): ProviderCatalogResponse {
+        if (isV2(conn)) return v2.providers(conn)
         return httpClient.get("${conn.baseUrl}/provider") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -954,6 +1030,7 @@ class OpenCodeApi @Inject constructor(
      * GET /provider/auth
      */
     suspend fun getProviderAuthMethods(conn: ServerConnection): Map<String, List<ProviderAuthMethod>> {
+        if (isV2(conn)) return v2.authMethods(conn)
         return httpClient.get("${conn.baseUrl}/provider/auth") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -968,6 +1045,7 @@ class OpenCodeApi @Inject constructor(
         providerId: String,
         methodIndex: Int
     ): ProviderOauthAuthorization? {
+        if (isV2(conn)) return v2.authorizeOauth(conn, providerId, methodIndex)
         val response = httpClient.post("${conn.baseUrl}/provider/$providerId/oauth/authorize") {
             conn.authHeader?.let { header("Authorization", it) }
             contentType(ContentType.Application.Json)
@@ -1004,6 +1082,7 @@ class OpenCodeApi @Inject constructor(
         methodIndex: Int,
         code: String? = null
     ): Boolean {
+        if (isV2(conn)) return v2.completeOauth(conn, providerId, code)
         val body = ProviderOauthCallbackRequest(method = methodIndex, code = code)
         if (BuildConfig.DEBUG) {
             Log.d(TAG, "completeProviderOauth: POST /provider/$providerId/oauth/callback method=$methodIndex hasCode=${code != null}")
@@ -1029,6 +1108,7 @@ class OpenCodeApi @Inject constructor(
      * PUT /auth/{providerID}
      */
     suspend fun setProviderApiKey(conn: ServerConnection, providerId: String, apiKey: String): Boolean {
+        if (isV2(conn)) return v2.setApiKey(conn, providerId, apiKey)
         val response = httpClient.put("${conn.baseUrl}/auth/$providerId") {
             conn.authHeader?.let { header("Authorization", it) }
             contentType(ContentType.Application.Json)
@@ -1042,6 +1122,7 @@ class OpenCodeApi @Inject constructor(
      * DELETE /auth/{providerID}
      */
     suspend fun removeProviderAuth(conn: ServerConnection, providerId: String): Boolean {
+        if (isV2(conn)) return v2.removeAuth(conn, providerId)
         if (BuildConfig.DEBUG) Log.d(TAG, "removeProviderAuth: request")
         val response = httpClient.delete("${conn.baseUrl}/auth/$providerId") {
             conn.authHeader?.let { header("Authorization", it) }
@@ -1056,9 +1137,11 @@ class OpenCodeApi @Inject constructor(
      * Get current server config.
      * GET /config
      */
-    suspend fun getConfig(conn: ServerConnection): ServerConfigResponse {
+    suspend fun getConfig(conn: ServerConnection, directory: String? = null): ServerConfigResponse {
+        if (isV2(conn)) return v2.config(conn, directory)
         return httpClient.get("${conn.baseUrl}/config") {
             conn.authHeader?.let { header("Authorization", it) }
+            directoryHeader(directory)
         }.body()
     }
 
@@ -1067,6 +1150,7 @@ class OpenCodeApi @Inject constructor(
      * GET /global/config
      */
     suspend fun getGlobalConfig(conn: ServerConnection): ServerConfigResponse {
+        if (isV2(conn)) return v2.config(conn)
         return httpClient.get("${conn.baseUrl}/global/config") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -1077,6 +1161,7 @@ class OpenCodeApi @Inject constructor(
      * PATCH /config
      */
     suspend fun updateConfig(conn: ServerConnection, patch: ServerConfigPatch): ServerConfigResponse {
+        if (isV2(conn)) error("OpenCode v2 does not expose these configuration edits; use the server configuration file")
         return httpClient.patch("${conn.baseUrl}/config") {
             conn.authHeader?.let { header("Authorization", it) }
             contentType(ContentType.Application.Json)
@@ -1089,6 +1174,7 @@ class OpenCodeApi @Inject constructor(
      * PATCH /global/config
      */
     suspend fun updateGlobalConfig(conn: ServerConnection, patch: ServerConfigPatch): ServerConfigResponse {
+        if (isV2(conn)) error("OpenCode v2 does not expose these configuration edits; use the server configuration file")
         return httpClient.patch("${conn.baseUrl}/global/config") {
             conn.authHeader?.let { header("Authorization", it) }
             contentType(ContentType.Application.Json)
@@ -1101,6 +1187,7 @@ class OpenCodeApi @Inject constructor(
      * POST /global/dispose
      */
     suspend fun disposeGlobal(conn: ServerConnection): Boolean {
+        if (isV2(conn)) { v2.request(conn, "/api/location/reload", HttpMethod.Post); return true }
         val response = httpClient.post("${conn.baseUrl}/global/dispose") {
             conn.authHeader?.let { header("Authorization", it) }
         }
@@ -1114,6 +1201,7 @@ class OpenCodeApi @Inject constructor(
      * GET /command
      */
     suspend fun listCommands(conn: ServerConnection): List<CommandInfo> {
+        if (isV2(conn)) return v2.commands(conn)
         return httpClient.get("${conn.baseUrl}/command") {
             conn.authHeader?.let { header("Authorization", it) }
         }.body()
@@ -1121,20 +1209,112 @@ class OpenCodeApi @Inject constructor(
 
     // ============ Files ============
 
-    suspend fun searchText(conn: ServerConnection, pattern: String): List<SearchMatch> {
-        return httpClient.get("${conn.baseUrl}/find") {
+    suspend fun fileCapabilities(conn: ServerConnection): WorkspaceFileCapabilities =
+        workspaceFileCapabilities(ServerProtocolRegistry.resolve(httpClient, json, conn))
+
+    suspend fun downloadFile(conn: ServerConnection, path: String, directory: String?,
+        output: java.io.OutputStream, base64Encoded: Boolean = false, onProgress: (Long, Long?) -> Unit): String? {
+        if (isV2(conn)) return v2.downloadFile(conn, path, directory, output, onProgress)
+        if (base64Encoded) {
+            val target = directory?.takeIf(String::isNotBlank)?.let { serverFileRequest(path, it) }
+            return httpClient.prepareGet("${conn.baseUrl}/file/content") {
+                conn.authHeader?.let { header("Authorization", it) }
+                (target?.directory ?: directory)?.let { parameter("directory", it) }
+                directoryHeader(target?.directory ?: directory)
+                parameter("path", target?.path ?: path)
+            }.execute { response ->
+                check(response.status.isSuccess()) { "File download failed (HTTP ${response.status.value})" }
+                withContext(Dispatchers.IO) {
+                    val context = kotlinx.coroutines.currentCoroutineContext()
+                    var written = 0L
+                    var reported = 0L
+                    val progress = object : java.io.OutputStream() {
+                        override fun write(value: Int) = write(byteArrayOf(value.toByte()), 0, 1)
+                        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                            context.ensureActive()
+                            output.write(bytes, offset, length)
+                            written += length
+                            if (written - reported >= 65_536) {
+                                onProgress(written, null)
+                                reported = written
+                            }
+                        }
+                    }
+                    val mime = downloadV1Binary(response.bodyAsChannel().toInputStream(), progress)
+                    output.flush()
+                    onProgress(written, written)
+                    mime
+                }
+            }
+        }
+        val content = readFile(conn, path, directory)
+        check(content.type != "binary" || content.content.isNotEmpty()) { "This V1 server does not expose the binary file contents" }
+        val bytes = if (content.encoding == "base64") Base64.getMimeDecoder().decode(content.content)
+            else content.content.toByteArray(Charsets.UTF_8)
+        withContext(Dispatchers.IO) { output.write(bytes); output.flush() }
+        onProgress(bytes.size.toLong(), bytes.size.toLong())
+        return content.mimeType
+    }
+
+    suspend fun writeWorkspaceFile(conn: ServerConnection, path: String, directory: String, bytes: ByteArray) {
+        check(isV2(conn)) { "File writes are unavailable on the V1 API" }
+        v2.writeFile(conn, path, directory, bytes)
+    }
+
+    suspend fun uploadWorkspaceFile(conn: ServerConnection, path: String, directory: String,
+        input: java.io.InputStream, onProgress: (Long) -> Unit) {
+        check(isV2(conn)) { "File upload is unavailable on the V1 API" }
+        v2.uploadFile(conn, path, directory, input, onProgress)
+    }
+
+    suspend fun fileStatuses(conn: ServerConnection, directory: String): List<WorkspaceGitStatus> {
+        check(!isV2(conn)) { "File status is unavailable on the V2 filesystem API" }
+        return httpClient.get("${conn.baseUrl}/file/status") { conn.authHeader?.let { header("Authorization", it) }; directoryHeader(directory) }.body()
+    }
+
+    suspend fun workspaceVcsStatus(conn: ServerConnection, directory: String): List<WorkspaceVcsChange> {
+        if (isV2(conn)) return v2.vcsStatus(conn, directory)
+        return readWorkspaceVcsV1(httpClient, json, conn, "/vcs/status", directory) ?: fileStatuses(conn, directory).map {
+            WorkspaceVcsChange(it.path, it.additions, it.deletions, it.status)
+        }
+    }
+
+    suspend fun workspaceVcsDiff(conn: ServerConnection, directory: String, mode: WorkspaceDiffMode): List<WorkspaceVcsChange> {
+        val isV2 = isV2(conn)
+        val query = mapOf("mode" to workspaceDiffMode(mode, isV2), "context" to "3")
+        if (isV2) return v2.vcsDiff(conn, directory, mode)
+        return readWorkspaceVcsV1(httpClient, json, conn, "/vcs/diff", directory, query)
+            ?: error("This server does not support the project diff API")
+    }
+
+    suspend fun searchText(conn: ServerConnection, pattern: String, directory: String? = null): List<SearchMatch> {
+        if (isV2(conn)) error("Text search is unavailable in the OpenCode v2 API")
+        val matches: JsonArray = httpClient.get("${conn.baseUrl}/find") {
             conn.authHeader?.let { header("Authorization", it) }
             parameter("pattern", pattern)
+            directoryHeader(directory)
         }.body()
+        return matches.mapNotNull { element ->
+            val match = element as? JsonObject ?: return@mapNotNull null
+            fun text(key: String): String? = when (val value = match[key]) {
+                is kotlinx.serialization.json.JsonPrimitive -> value.contentOrNull
+                is JsonObject -> (value["text"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+                else -> null
+            }
+            SearchMatch(text("path") ?: return@mapNotNull null, text("lines").orEmpty(),
+                (match["line_number"] ?: match["lineNumber"])?.jsonPrimitive?.intOrNull ?: 1,
+                (match["absolute_offset"] ?: match["absoluteOffset"])?.jsonPrimitive?.intOrNull ?: 0)
+        }
     }
 
     suspend fun findFiles(conn: ServerConnection, query: String, type: String? = null, directory: String? = null, limit: Int? = null, dirs: String? = null): List<String> {
+        if (isV2(conn)) return v2.findFiles(conn, query, type, directory, limit)
         return httpClient.get("${conn.baseUrl}/find/file") {
             conn.authHeader?.let { header("Authorization", it) }
             directory?.let {
                 parameter("directory", it)
-                header("x-opencode-directory", it)
             }
+            directoryHeader(directory)
             parameter("query", query)
             type?.let { parameter("type", it) }
             limit?.let { parameter("limit", it) }
@@ -1142,26 +1322,43 @@ class OpenCodeApi @Inject constructor(
         }.body()
     }
 
-    suspend fun readFile(conn: ServerConnection, path: String, directory: String? = null): FileContent {
-        return httpClient.get("${conn.baseUrl}/file/content") {
+    suspend fun readFile(conn: ServerConnection, path: String, directory: String? = null,
+        maxResponseBytes: Long = 32L * 1024 * 1024): FileContent {
+        if (isV2(conn)) return v2.readFile(conn, path, directory, minOf(maxResponseBytes, 8L * 1024 * 1024))
+        val target = directory?.takeIf(String::isNotBlank)?.let { serverFileRequest(path, it) }
+        return httpClient.prepareGet("${conn.baseUrl}/file/content") {
             conn.authHeader?.let { header("Authorization", it) }
-            directory?.let {
+            (target?.directory ?: directory)?.let {
                 parameter("directory", it)
-                header("x-opencode-directory", it)
             }
-            parameter("path", path)
-        }.body()
+            directoryHeader(target?.directory ?: directory)
+            parameter("path", target?.path ?: path)
+        }.execute { response ->
+            check(response.status.isSuccess()) { "File read failed (HTTP ${response.status.value})" }
+            withContext(Dispatchers.IO) {
+                V2LimitedInputStream(response.bodyAsChannel().toInputStream(), maxResponseBytes)
+                    .reader(Charsets.UTF_8).use { input ->
+                        json.decodeFromJsonElement<FileContent>(readV2Response(json, input, "/file/content",
+                            V2ResponseLimits(maxRetainedChars = 24 * 1024 * 1024, maxLiteralChars = 24 * 1024 * 1024)))
+                    }
+            }
+        }
     }
 
     suspend fun listDirectory(conn: ServerConnection, path: String = "", directory: String? = null): List<FileNode> {
-        return httpClient.get("${conn.baseUrl}/file") {
+        if (isV2(conn)) return v2.listDirectory(conn, path, directory)
+        val response = httpClient.get("${conn.baseUrl}/file") {
             conn.authHeader?.let { header("Authorization", it) }
             directory?.let {
                 parameter("directory", it)
-                header("x-opencode-directory", it)
             }
+            directoryHeader(directory)
             parameter("path", path)
-        }.body()
+        }
+        check(response.status.isSuccess()) { "Directory listing failed (HTTP ${response.status.value})" }
+        val payload = response.body<JsonElement>()
+        check(payload is JsonArray) { "Server did not return a directory listing" }
+        return json.decodeFromJsonElement(payload)
     }
 }
 
@@ -1328,6 +1525,16 @@ data class ModelSelection(
 )
 
 @Serializable
+data class V2InboxItem(
+    val id: String,
+    @SerialName("sessionID") val sessionId: String,
+    val type: String,
+    val payload: JsonObject,
+    val delivery: String,
+    val time: TimeInfo,
+)
+
+@Serializable
 data class OutputFormat(
     val type: String,
     val schema: String? = null
@@ -1347,11 +1554,16 @@ data class SearchMatch(
 )
 
 @Serializable
+data class WorkspaceGitStatus(val path: String, @SerialName("added") val additions: Int = 0,
+    @SerialName("removed") val deletions: Int = 0, val status: String)
+
+@Serializable
 data class FileContent(
     val type: String,
     val content: String,
     val encoding: String? = null,
     val mimeType: String? = null,
+    val diff: String? = null,
 )
 
 @Serializable
@@ -1394,7 +1606,8 @@ data class QuestionRequest(
     val id: String,
     @SerialName("sessionID") val sessionId: String,
     val questions: List<QuestionInfo>,
-    val tool: ToolRef? = null
+    val tool: ToolRef? = null,
+    val requiresWebUi: Boolean = false,
 )
 
 @Serializable
@@ -1403,13 +1616,15 @@ data class QuestionInfo(
     val header: String,
     val options: List<QuestionOption>,
     val multiple: Boolean = false,
-    val custom: Boolean = true
+    val custom: Boolean = true,
+    val key: String? = null
 )
 
 @Serializable
 data class QuestionOption(
     val label: String,
-    val description: String
+    val description: String,
+    val value: String? = null
 )
 
 // ============ Provider DTOs ============
@@ -1495,7 +1710,9 @@ data class ServerConfigResponse(
     @SerialName("enabled_providers") val enabledProviders: List<String>? = null,
     val model: String? = null,
     @SerialName("small_model") val smallModel: String? = null,
-    @SerialName("default_agent") val defaultAgent: String? = null
+    @SerialName("default_agent") val defaultAgent: String? = null,
+    val readOnly: Boolean = false,
+    val modelVariant: String? = null,
 )
 
 @Serializable
@@ -1566,7 +1783,8 @@ data class AgentInfo(
     val description: String? = null,
     val mode: String = "primary", // "primary", "subagent", "all"
     val hidden: Boolean = false,
-    val color: String? = null
+    val color: String? = null,
+    val model: ModelSelection? = null,
 )
 
 // ============ Command DTOs ============

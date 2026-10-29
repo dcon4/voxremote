@@ -6,6 +6,219 @@ Track open bugs here. Remove items once they are fixed and verified on device.
 
 ## Open
 
+- Phone tab menu used horizontal "to the right" labels in a vertical list (device report).
+  It now uses "after this one" / "below"; desktop retains horizontal labels. Device visual
+  confirmation pending (`SessionTabContextMenu.kt`, `SessionTabsSheet.kt`).
+
+- Phone volume shortcuts were compared with Termux: Volume Up+Q/K now toggles extra keys instead
+  of the Android keyboard, clears held Fn, and releases the hidden panel's viewport space.
+  Numeric Ctrl aliases and Ctrl+/ now match Termux. Device/IME verification pending
+  (`ChatScreen.kt`, `TerminalPhoneShortcutsTest.kt`).
+
+- Terminal extra-key visibility reset after session tab navigation: it was only rememberSaveable
+  state keyed by hardware keyboard presence and absent from ChatViewSnapshot. The explicit choice
+  is now saved/restored per session, with keyboard-based defaults only before a choice is made.
+  Device navigation verification pending (`ChatScreen.kt`, `SessionWorkspaceRepository.kt`).
+
+- Phone tab cards were oversized and the pin displaced the two-line heading (device feedback).
+  Cards now follow Favorites' shape, surface, typography and three-row spacing, with a single-line
+  heading and aligned actions. Visual/device verification pending (`SessionTabsSheet.kt:137–210`).
+
+- Terminal toolbar/layout visual correction awaits device verification: the underline-style tabs
+  did not match the app (device feedback). PTYs now use compact outlined tabs and stable `[n]`
+  labels shared with the phone drawer. The terminal frame is removed,
+  and the splitter draws a 1dp line inside a 12dp drag target. Composer width now accounts for the
+  splitter (`DesktopTerminalToolbar.kt`, `TerminalPaneDivider.kt`, `ChatScreen.kt`).
+
+- Phone terminal edge interaction was reported to work only alongside text. The edge layer had no
+  ordinary tap handler and shared the content's z-order. It now handles tap as well as long-press
+  and swipe in a 24dp-wide foreground strip spanning the viewport above the extra keys. Verify
+  taps beside both text and empty rows on device (`ChatScreen.kt`, around line 2800).
+
+- Desktop terminal input and split layout are new. Hardware keys honor DECCKM and xterm modifiers;
+  paste honors DEC 2004; mouse tracking supports SGR/URXVT/UTF-8 with Shift-local selection and
+  scrollback. Legacy text-frame mouse coordinates are limited to ASCII-safe values. Focus routing,
+  physical keyboard layouts, TUI mouse interaction, clipboard shortcuts and resizing a docked PTY
+  require device/live-TUI verification (`TerminalDesktopProtocol.kt`, `TerminalDesktopInput.kt`,
+  `DesktopTerminalToolbar.kt`, `ChatScreen.kt`).
+
+- Follow-up browser corrections need device verification: desktop Undo now has a finite snackbar
+  duration; phone tab lists/counts/history and bulk operations are session-only while desktop pages
+  remain saved. Home's wide-mode header is removed and About/Add server are in the desktop menu.
+  Tab widths now shrink before scrolling, keeping the add button visible (`BrowserTabs.kt`,
+  `DesktopTabWidths.kt`, `DesktopSessionTabs.kt`, `NavGraph.kt`, `HomeScreen.kt`).
+
+- Terminal IME prediction was not fully disabled by autoCorrectEnabled=false alone. The terminal
+  input connection now requests visible-password/no-suggestions input and disables personalized
+  learning and extract/fullscreen IME modes. Verify with the device keyboard (`TerminalKeyboardInput.kt`).
+
+- Page tabs and the desktop tab-search popup are new. Wide-mode app/settings/server/file pages now
+  have typed, credential-free tab identities, sharing close/pin/restore with sessions. Legacy saved
+  session tabs and closed history are migrated. The left-hand tab search uses an anchored popup;
+  settings/about/sync/update headers are hidden when represented by a wide-mode tab. Device
+  verification pending (`WorkspaceTab.kt`, `WorkspacePages.kt`, `DesktopTabSearch.kt`).
+
+- Browser workspace changes need device verification: shared pinned-tab ordering and a persisted
+  100-entry closed history now back both tab presentations. Context menus support rename/reload,
+  pinning and bulk close; mouse middle-click closes and Ctrl+Shift+T restores. The wide layout
+  removes the session header and old navigation rail, exposes settings through its session menu,
+  and supports a saved full-width chat preference (`BrowserTabs.kt`, `ChatSessionMenu.kt`,
+  `DesktopSessionTabs.kt`, `NavGraph.kt`).
+
+- Desktop session tabs are new: wide chat windows use a persistent draggable tab strip backed by
+  the same saved tabs as the mobile switcher. Close/undo, existing-session picker, hover tooltips,
+  Ctrl+Tab/Ctrl+Shift+Tab and Ctrl+W (reserved while connected terminal input has focus) require device/DeX verification
+  (`DesktopSessionTabs.kt`, `NavGraph.kt`, `ChatScreen.kt`).
+
+- Locale override copied the entire Configuration, potentially retaining portrait dimensions after
+  rotation with configChanges enabled. It now overrides only locale, and menus use the actual
+  visible window frame, including IME/split-screen changes. Previous configuration-based menu
+  height fix did not work on device; this replacement still needs device verification
+  (`MainActivity.kt:attachBaseContext`, `AppDropdownMenu.kt`).
+
+- Responsive-layout audit changes need device verification: About, category editing, context
+  details and upload forms now scroll; dialog heights follow the visible frame and actions wrap.
+  File editing allows a single visible line. Short windows use smaller suggestions, attachments,
+  a two-line composer and an initially collapsed inbox. Wide windows now use browser-style tabs
+  with optional full-width chat (`AdaptiveLayout.kt`, `DesktopSessionTabs.kt`, `AppSurfaces.kt`,
+  affected screen roots). Verify rotation, split-screen, keyboard transitions, large fonts and
+  restored navigation state. Simultaneous list/detail panes are not implemented.
+
+- Long dropdown menus were clipped on short/landscape screens after introducing the animated
+  surface wrapper. The common menu now bounds its surface to the available screen height and
+  scrolls content inside that surface. Device verification pending (`AppDropdownMenu.kt`).
+
+- V2 inbox controls are new: confirmed queued user requests expose cancel and queue/steer actions.
+  Cancellation checks whether the item was already delivered before marking it cancelled; stale
+  snapshots cannot revive the cancelled item. Live V2 and device verification pending
+  (`InboxQueueBar.kt`, `ChatViewModel.kt`, `EventReducer.kt`).
+
+- Modern V1 file status returned no changes because `/file/status` is a stub in 1.19.4. Project
+  changes now use `/vcs/status` and `/vcs/diff` (V2: `/api/vcs/*`), with read-only patch viewing
+  including deleted files. Older V1 status falls back only on missing endpoints. Device
+  verification pending (`WorkspaceChangesPane.kt`, `WorkspaceFilesViewModel.kt`, `OpenCodeApi.kt`).
+
+- Automatic sync switch only changed an unsaved form value, so leaving Settings reset it. The
+  switch now persists immediately and updates WorkManager without saving or resetting connection
+  fields. The remaining form now autosaves after an input pause and flushes on Back; a completed
+  save must not overwrite newer edits. Device verification pending (`SyncSettingsScreen.kt`,
+  `SyncSettingsViewModel.kt`, `SyncRepository.kt`).
+
+- Tab switcher could retain the chat/search keyboard after moving into the main Activity window.
+  Entering the switcher or closing its search now clears focus and hides the keyboard; device
+  verification pending (`SessionTabsSheet.kt`).
+
+- Shared snackbars drew an outer border around Material's built-in margin, creating a second
+  oversized frame. AppSnackbarHost now uses the content overload with margin outside the border;
+  all messages using it receive the fix. Device verification pending (`AppSnackbarHost.kt`).
+
+- Moving tabs from Dialog to the Activity removed the platform window transition. The overlay now
+  has explicit fade/scale entrance and exit animations. Session menus also retain their popup until
+  fade-out completes, including dismissal during entrance; device verification pending
+  (`NavGraph.kt`, `AppDropdownMenu.kt`).
+
+- Native update release-notes screen is new: version-specific GitHub notes are cached for offline
+  reading, with a fixed download/install action and progress. Navigation, long Markdown, AMOLED,
+  and installer return still need device verification (`ui/screens/update/`, `UpdateRepository.kt`).
+
+- Light-theme tab switcher still showed some white status icons on a light background (device
+  report after 1.13.0). Synchronizing dialog InsetsController and legacy flags did not fix it on
+  device. The switcher now uses the Activity's own window as a fullscreen overlay instead of a
+  floating Dialog; underlying chat system-bar overrides are suspended. Device verification pending
+  (`SessionTabsSheet.kt`, `NavGraph.kt`, `ChatScreen.kt`).
+
+- Automatic update discovery only ran when HomeViewModel was created. It now runs on Activity
+  resume with a 24-hour completed-check interval, following Telegram standalone; cancelled checks
+  do not consume the interval. Device verification pending (`MainActivity.kt`, `UpdateRepository.kt`).
+
+- Tab-close snackbar's long translated action squeezed the message into a narrow column. New
+  snackbars place actions below the message and use theme-aware outlined surfaces. AMOLED fixes
+  also cover the tab FAB, file tiles, menus, and chat panels. Device verification pending
+  (`AppSnackbarHost.kt`, `SessionTabsSheet.kt`, `ChatAcrylic.kt`).
+
+- Back from a chat file link walked parent directories instead of returning to chat. Link-origin
+  screens now exit directly on Back (including loading/error states); Folder Up separately opens
+  the parent directory within the project. Device verification pending (`WorkspaceFilesScreen.kt`,
+  `WorkspaceFilesViewModel.kt`).
+
+- Reading mode hid the session activity row along with the composer. Activity and retry status now
+  sit outside the collapsing panel; fullscreen visibility and navigation-bar spacing need device
+  verification (`ChatScreen.kt`, bottomBar and SessionActivityRow).
+
+- Opening the debug APK on OpenCode 1.19.3 exceeded the shared preview parser's 24 MiB character
+  limit (the live V1 response is about 27 MB of Base64 JSON). APKs now open a binary file card,
+  and V1 Base64 downloads decode incrementally outside the preview limits. Device verification
+  of save/open/install remains pending (`WorkspaceFilesViewModel.kt`, `V1BinaryDownload.kt`).
+
+- Workspace parent navigation could leave the project and expose raw JSON decoding errors on V1.
+  Directory navigation is now normalized to project-relative paths and blocked outside the root;
+  V1 listing validates status and payload shape first. Device verification pending
+  (`WorkspaceFilesViewModel.kt`, `OpenCodeApi.kt`).
+
+- Inline-code file paths looked like links but had no click handler (including the APK path in chat).
+  Recognized paths now receive native Compose link annotations; device verification of tapping and
+  selection is pending (`InteractiveMarkdownLinks.kt`).
+
+- Markdown file links reportedly did not open from chat. Inline links now use native Compose
+  LinkAnnotation callbacks instead of the renderer's pointerInput(Unit), which captures stale text
+  during streaming. Actual file navigation and menu surface fade still need device verification
+  (`InteractiveMarkdownLinks.kt`, `AppDropdownMenu.kt`).
+
+- Workspace downloads previously discarded the saved URI and offered no Open action; generic MIME
+  also prevented APK installer routing. Downloads now retain content URIs, use specific MIME types,
+  grant read permission, and offer Open/Share. V2 transfers stream separately from preview limits;
+  upload, cancellation cleanup, SAF providers and APK installation still need device verification
+  (`WorkspaceFileActions.kt`, `WorkspaceFilesViewModel.kt`, `OpenCodeV2Api.kt`).
+
+- Leaving fullscreen at the conversation bottom released the scroll anchor after the lower panel's
+  animation while the slower upper panel was still changing list padding. Bottom anchoring now runs
+  through both animations and their final layout frames, without a second competing scroll command;
+  the reported Back gesture still needs device verification (`ChatScreen.kt` around lines 1125-1170).
+
+- Server-file links and expanded workspace previews now target the OpenCode 2.1.4 filesystem
+  contract: links resolve on the server, v2 reads outside the project use the file's parent location,
+  and fs.find entry objects are decoded correctly. Link navigation, Windows paths, PDF rendering,
+  and static HTML previews still need live-server/device verification (`ServerFileLink.kt`,
+  `OpenCodeV2Api.kt`, and `ui/screens/files/`).
+
+- Cold-opening a tab on a disconnected server rendered the connection banner under the status
+  bar because the chat toolbar depended on sessionLoaded. The toolbar now remains visible before
+  loading, and the empty conversation prompt is replaced with connection/loading state until the
+  session arrives. Device verification is pending (`ChatScreen.kt` around lines 1800 and 2850).
+
+- Chat panels now use Haze-backed acrylic surfaces and continuous slide/fade on user scrolling.
+  Backdrop blur, status-bar contrast, keyboard insets, and frame pacing need device verification;
+  unsupported Android versions use a tinted fallback (`ChatAcrylic.kt` and `ReadingMode.kt`).
+
+- Automatic reading mode was blocked at the end of loaded history and defaulted off; tab-switcher
+  system bars also appeared black on device instead of matching the surface. The end-of-history
+  restriction is removed, unset auto-hide/status-bar options default on, and dialog window colors
+  are reapplied after window setup. These device-reported regressions require rechecking
+  (`ChatScreen.kt` around line 1100 and `SessionTabsSheet.kt` around line 80).
+
+- Session-tab switching and reading mode are new. Tabs restore lightweight metadata and bounded
+  history anchors; fullscreen hides selected system bars and restores them on leaving the screen.
+  Cross-server drafts, long-message scroll anchors, IME/insets, accessibility, and terminal return
+  still need device verification (`SessionWorkspaceRepository.kt`, `NavGraph.kt`, `ReadingMode.kt`,
+  and `ChatScreen.kt`).
+
+- An unreachable host could leave its card connecting without a cancellation action. Connecting
+  cards now expose Cancel, which cancels the health-check job or service connection, and health
+  checks propagate coroutine cancellation. The actual unreachable-host flow still needs device
+  verification (`HomeScreen.kt` around line 1135 and `HomeViewModel.kt` around lines 900-913).
+
+- OpenCode v2 integration is based on the published 2.0.30 contract (PR #45). V1 fallback, scoped
+  discovery, cursor pagination, session-owned selections, inbox admission, authoritative SSE
+  completion and bounded history/file parsing have regression coverage, but successful generation,
+  reconnect recovery, forms and ticketed PTY still need end-to-end device verification
+  (`OpenCodeV2Api.kt`, `V2Protocol.kt`, `EventReducer.kt`, and `ChatViewModel.kt`). Complex forms
+  require the web client; configuration writes and native MCP OAuth are not exposed on v2.
+
+- The first chat prompt could use a hidden server-default model instead of the model shown by the
+  selector (#41). UI, prompts, shell commands, and compaction now share model resolution from
+  explicit selection, agent configuration, history, project configuration, and visible models,
+  but first-message routing still needs device verification (`ChatModelSelection.kt` and `ChatViewModel.kt`).
+
 - Settings sync previously imported settings, servers, and category assignments through separate
   DataStore edits. Import and upload snapshots are now atomic, but the fix still needs cross-device
   verification (`SyncRepository.kt` around lines 350-375).

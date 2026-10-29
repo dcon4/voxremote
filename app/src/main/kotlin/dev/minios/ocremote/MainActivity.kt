@@ -91,6 +91,9 @@ class MainActivity : ComponentActivity() {
     lateinit var serverRepository: ServerRepository
 
     @Inject
+    lateinit var sessionWorkspace: dev.minios.ocremote.data.repository.SessionWorkspaceRepository
+
+    @Inject
     lateinit var eventReducer: EventReducer
 
     @Inject
@@ -98,6 +101,11 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var voiceController: VoiceController
+
+    @Inject
+    lateinit var updateRepository: dev.minios.ocremote.data.update.UpdateRepository
+
+    private var updateCheckJob: kotlinx.coroutines.Job? = null
     
     /**
      * Shared flow for deep-link events from notification taps.
@@ -141,8 +149,9 @@ class MainActivity : ComponentActivity() {
         if (languageCode.isNotEmpty()) {
             val locale = parseLocale(languageCode)
             Locale.setDefault(locale)
-            val config = newBase.resources.configuration
-            config.setLocale(locale)
+            // Override only locale, not the current screen size/orientation/font scale.
+            // A full configuration copy freezes those values across handled configuration changes.
+            val config = android.content.res.Configuration().apply { setLocale(locale) }
             super.attachBaseContext(newBase.createConfigurationContext(config))
         } else {
             super.attachBaseContext(newBase)
@@ -186,6 +195,9 @@ class MainActivity : ComponentActivity() {
                 initial = SettingsRepository.DEFAULT_DYNAMIC_COLOR,
             )
             val amoledDark by settingsRepository.amoledDark.collectAsState(initial = false)
+            val sessionFeatures by settingsRepository.sessionFeatures.collectAsState(
+                initial = null,
+            )
             val connectedServerIds by serverConnectionStateRepository.connectedServerIds.collectAsState()
             val connectingServerIds by serverConnectionStateRepository.connectingServerIds.collectAsState()
             
@@ -214,17 +226,32 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    NavGraph(
-                        deepLinkFlow = _deepLinkFlow,
-                        syncSettingsFlow = _syncSettingsFlow,
-                        sharedAttachmentsFlow = sharedAttachmentsFlow,
-                        settingsRepository = settingsRepository,
-                        serverRepository = serverRepository,
-                        eventReducer = eventReducer,
-                        connectedServerIds = connectedServerIds,
-                        connectingServerIds = connectingServerIds,
-                    )
+                    if (sessionFeatures != null) androidx.compose.runtime.CompositionLocalProvider(
+                        dev.minios.ocremote.ui.components.LocalSessionFeatures provides requireNotNull(sessionFeatures),
+                    ) {
+                        NavGraph(
+                            deepLinkFlow = _deepLinkFlow,
+                            syncSettingsFlow = _syncSettingsFlow,
+                            sharedAttachmentsFlow = sharedAttachmentsFlow,
+                            settingsRepository = settingsRepository,
+                            serverRepository = serverRepository,
+                            sessionWorkspace = sessionWorkspace,
+                            eventReducer = eventReducer,
+                            connectedServerIds = connectedServerIds,
+                            connectingServerIds = connectingServerIds,
+                        )
+                    }
                 }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (updateCheckJob?.isActive != true) {
+            updateCheckJob = lifecycleScope.launch {
+                updateRepository.restore()
+                updateRepository.check(manual = false)
             }
         }
     }

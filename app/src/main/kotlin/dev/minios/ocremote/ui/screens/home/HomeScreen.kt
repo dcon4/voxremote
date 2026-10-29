@@ -1,4 +1,7 @@
 package dev.minios.ocremote.ui.screens.home
+import dev.minios.ocremote.ui.components.readableContentWidth
+import dev.minios.ocremote.ui.components.AppDropdownMenu as DropdownMenu
+import dev.minios.ocremote.ui.components.AppDropdownMenuItem as DropdownMenuItem
 
 import com.composables.icons.lucide.*
 import dev.minios.ocremote.ui.components.forwardChevronIcon
@@ -145,7 +148,12 @@ private fun PulsingDotsIndicator(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
+    desktopMode: Boolean = false,
+    onOpenUpdateDetails: () -> Unit = {},
+    openTabCount: Int = 0,
+    onOpenTabs: () -> Unit = {},
     addServerRequest: Int = 0,
+    onAddServerRequestHandled: () -> Unit = {},
     onNavigateToSessions: (serverUrl: String, username: String, password: String, serverName: String, serverId: String) -> Unit = { _, _, _, _, _ -> },
     onNavigateToCrossServerSessions: () -> Unit = {},
     onNavigateToServerSettings: (serverUrl: String, username: String, password: String, serverName: String, serverId: String) -> Unit = { _, _, _, _, _ -> },
@@ -154,6 +162,7 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val sessionFeatures = dev.minios.ocremote.ui.components.LocalSessionFeatures.current
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val launchInstaller = rememberUpdateInstallLauncher(viewModel::installerLaunched)
@@ -175,12 +184,13 @@ fun HomeScreen(
     }
 
     val readyUpdate = uiState.updateState as? UpdateState.ReadyToInstall
-    LaunchedEffect(readyUpdate?.apkPath) {
-        readyUpdate?.let { launchInstaller(it.apkPath) }
+    val lifecycleState by androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    LaunchedEffect(readyUpdate?.apkPath, lifecycleState) {
+        if (lifecycleState == androidx.lifecycle.Lifecycle.State.RESUMED) readyUpdate?.let { launchInstaller(it.apkPath) }
     }
 
     LaunchedEffect(addServerRequest) {
-        if (addServerRequest > 0) viewModel.showAddServerDialog()
+        if (addServerRequest > 0) { viewModel.showAddServerDialog(); onAddServerRequestHandled() }
     }
 
     // Track battery optimization status, re-check when app resumes
@@ -249,16 +259,17 @@ fun HomeScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
-            TopAppBar(
+            if (!desktopMode) TopAppBar(
                 title = { Text(stringResource(R.string.home_title)) },
                 actions = {
                     IconButton(onClick = { viewModel.shareLog() }) {
                         Icon(Lucide.Bug, contentDescription = stringResource(R.string.home_share_log))
                     }
+                    if (!desktopMode) dev.minios.ocremote.ui.components.SessionTabsButton(openTabCount, onOpenTabs)
                     IconButton(onClick = { viewModel.showAddServerDialog() }) {
                         Icon(Lucide.Plus, contentDescription = stringResource(R.string.home_add_server))
                     }
-                    IconButton(onClick = onNavigateToSettings) {
+                    if (!desktopMode) IconButton(onClick = onNavigateToSettings) {
                         Icon(Lucide.Settings, contentDescription = stringResource(R.string.settings_title))
                     }
                     IconButton(onClick = onNavigateToAbout) {
@@ -288,7 +299,7 @@ fun HomeScreen(
                 else -> {
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().readableContentWidth(),
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
@@ -310,6 +321,7 @@ fun HomeScreen(
                         if (uiState.updateState is UpdateState.Available || uiState.updateState is UpdateState.Error) {
                             item(key = "__app_update") {
                                 UpdateAvailableCard(
+                                    onWhatsNew = onOpenUpdateDetails,
                                     updateState = uiState.updateState,
                                     onPrepareInstall = viewModel::prepareInstall,
                                     onOpenInstaller = launchInstaller,
@@ -323,7 +335,7 @@ fun HomeScreen(
                             }
                         }
 
-                        if (uiState.hasFavoriteSessions == true) {
+                        if (uiState.hasFavoriteSessions == true && sessionFeatures.favorites) {
                             item(key = "__favorite_sessions") {
                                 FavoritesCard(onClick = onNavigateToCrossServerSessions)
                             }
@@ -556,6 +568,7 @@ private fun FavoritesCard(onClick: () -> Unit) {
 
 @Composable
 private fun UpdateAvailableCard(
+    onWhatsNew: () -> Unit,
     updateState: UpdateState,
     onPrepareInstall: (dev.minios.ocremote.data.update.AvailableUpdate) -> Unit,
     onOpenInstaller: (String) -> Unit,
@@ -662,6 +675,9 @@ private fun UpdateAvailableCard(
 
                 else -> Unit
             }
+        }
+        if (release != null) TextButton(onClick = onWhatsNew, modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)) {
+            Text(stringResource(R.string.update_whats_new))
         }
     }
 }
@@ -989,7 +1005,7 @@ private fun EmptyServersView(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ServerCard(
+internal fun ServerCard(
     modifier: Modifier = Modifier,
     server: ServerConfig,
     isConnected: Boolean,
@@ -1124,44 +1140,20 @@ private fun ServerCard(
                 )
             }
 
-            // Action buttons row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (isConnected) {
-                    AppPrimaryButton(
-                        onClick = onOpenSessions,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(
-                            Lucide.MessageCircle,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp).mirrorForRtl(),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(stringResource(R.string.sessions_title), maxLines = 1)
-                    }
-                }
-            }
             if (isConnected) {
-                Row(
+                AppPrimaryButton(
+                    onClick = onOpenSessions,
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    AppSecondaryButton(
-                        onClick = onDisconnect,
-                        modifier = Modifier.fillMaxWidth(),
-                        destructive = true,
-                        outlined = true,
-                    ) {
-                        Icon(Lucide.X, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(stringResource(R.string.home_disconnect), maxLines = 1)
-                    }
+                    Icon(
+                        Lucide.MessageCircle,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp).mirrorForRtl(),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.sessions_title), maxLines = 1)
                 }
-            }
-            if (!isConnected) {
+            } else {
                 AppPrimaryButton(
                     onClick = onConnect,
                     modifier = Modifier.fillMaxWidth(),
@@ -1171,7 +1163,7 @@ private fun ServerCard(
                         CircularProgressIndicator(
                             modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp,
-                            color = if (isAmoled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            color = if (isAmoled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(stringResource(R.string.home_connecting))
@@ -1180,6 +1172,18 @@ private fun ServerCard(
                         Spacer(Modifier.width(6.dp))
                         Text(stringResource(R.string.home_connect))
                     }
+                }
+            }
+            if (isConnected || isConnecting) {
+                AppSecondaryButton(
+                    onClick = onDisconnect,
+                    modifier = Modifier.fillMaxWidth(),
+                    destructive = true,
+                    outlined = true,
+                ) {
+                    Icon(Lucide.X, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(if (isConnected) R.string.home_disconnect else R.string.cancel), maxLines = 1)
                 }
             }
         }

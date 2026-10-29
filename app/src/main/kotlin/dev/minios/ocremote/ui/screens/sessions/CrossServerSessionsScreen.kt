@@ -1,4 +1,7 @@
 package dev.minios.ocremote.ui.screens.sessions
+import dev.minios.ocremote.ui.components.readableContentWidth
+import dev.minios.ocremote.ui.components.AppDropdownMenu as DropdownMenu
+import dev.minios.ocremote.ui.components.AppDropdownMenuItem as DropdownMenuItem
 
 import com.composables.icons.lucide.*
 import dev.minios.ocremote.ui.components.backIcon
@@ -33,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -75,8 +79,11 @@ fun CrossServerSessionsScreen(
     var selectedCategoryId by remember { mutableStateOf<String?>(null) }
     var offlinePromptItem by remember { mutableStateOf<CrossServerSessionItem?>(null) }
     var categoryPickerItem by remember { mutableStateOf<CrossServerSessionItem?>(null) }
-    val filteredItems = remember(state.items, selectedCategoryId) {
-        filterCrossServerFavorites(state.items, selectedCategoryId)
+    val features = dev.minios.ocremote.ui.components.LocalSessionFeatures.current
+    LaunchedEffect(features.favorites) { if (!features.favorites) onNavigateBack() }
+    LaunchedEffect(features.categories) { if (!features.categories) selectedCategoryId = null }
+    val filteredItems = remember(state.items, selectedCategoryId, features) {
+        if (features.favorites) filterCrossServerFavorites(state.items, selectedCategoryId.takeIf { features.categories }) else emptyList()
     }
     val listState = rememberLazyListState()
     val haptic = LocalHapticFeedback.current
@@ -120,9 +127,10 @@ fun CrossServerSessionsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .readableContentWidth(),
         ) {
-            if (state.items.isNotEmpty()) {
+            if (state.items.isNotEmpty() && features.categories) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -312,7 +320,7 @@ fun CrossServerSessionsScreen(
         }
     }
 
-    categoryPickerItem?.let { item ->
+    categoryPickerItem?.takeIf { features.categories }?.let { item ->
         SessionCategoryPickerDialog(
             categories = state.categories,
             selectedCategoryId = item.category?.id,
@@ -359,7 +367,7 @@ private fun CrossServerSessionCard(
             session = item.session,
             status = item.status,
             isFavorite = item.isFavorite,
-            category = item.category,
+            category = item.category.takeIf { dev.minios.ocremote.ui.components.LocalSessionFeatures.current.categories },
             contextLabel = item.server.displayName,
             contextDetail = item.session.directory.trimEnd('/').substringAfterLast('/').takeIf { directory ->
                 directory.isNotBlank() &&
@@ -393,7 +401,7 @@ private fun CrossServerSessionCard(
                             onToggleFavorite()
                         },
                     )
-                    DropdownMenuItem(
+                    if (dev.minios.ocremote.ui.components.LocalSessionFeatures.current.categories) DropdownMenuItem(
                         text = { Text(stringResource(R.string.session_category)) },
                         leadingIcon = {
                             Icon(

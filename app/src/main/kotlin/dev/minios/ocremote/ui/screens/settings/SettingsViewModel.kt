@@ -44,6 +44,13 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    val sessionFeatures = settingsRepository.sessionFeatures.stateIn(
+        viewModelScope, SharingStarted.WhileSubscribed(5000), dev.minios.ocremote.domain.model.SessionFeatures(),
+    )
+    fun setFavoritesEnabled(enabled: Boolean) { viewModelScope.launch { settingsRepository.setFavoritesEnabled(enabled) } }
+    fun setCategoriesEnabled(enabled: Boolean) { viewModelScope.launch { settingsRepository.setCategoriesEnabled(enabled) } }
+    fun setTabsEnabled(enabled: Boolean) { viewModelScope.launch { settingsRepository.setTabsEnabled(enabled) } }
+
     val syncState = syncRepository.state.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -496,6 +503,13 @@ class SettingsViewModel @Inject constructor(
             settingsRepository.setKeepScreenOn(enabled)
         }
     }
+
+    val readingAutoHide = settingsRepository.readingAutoHide.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+    val readingHideStatus = settingsRepository.readingHideStatus.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+    val readingHideNavigation = settingsRepository.readingHideNavigation.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    fun setReadingAutoHide(enabled: Boolean) { viewModelScope.launch { settingsRepository.setReadingAutoHide(enabled) } }
+    fun setReadingHideStatus(enabled: Boolean) { viewModelScope.launch { settingsRepository.setReadingHideStatus(enabled) } }
+    fun setReadingHideNavigation(enabled: Boolean) { viewModelScope.launch { settingsRepository.setReadingHideNavigation(enabled) } }
 
     fun setSilentNotifications(enabled: Boolean) {
         viewModelScope.launch {

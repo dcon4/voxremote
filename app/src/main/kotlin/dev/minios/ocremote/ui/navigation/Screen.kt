@@ -11,6 +11,7 @@ internal fun encodeNavigationArgument(value: String): String =
  */
 sealed class Screen(val route: String) {
     data object Home : Screen("home")
+    data object UpdateDetails : Screen("update_details")
     data object CrossServerSessions : Screen("cross_server_sessions")
     
     data object WebView : Screen("webview") {
@@ -73,11 +74,14 @@ sealed class Screen(val route: String) {
             username: String,
             password: String,
             directory: String,
+            filePath: String = "",
+            serverId: String = "",
         ): String {
             return "workspace_files?serverUrl=${encodeNavigationArgument(serverUrl)}" +
                 "&username=${encodeNavigationArgument(username)}" +
                 "&password=${encodeNavigationArgument(password)}" +
-                "&directory=${encodeNavigationArgument(directory)}"
+                "&directory=${encodeNavigationArgument(directory)}" +
+                "&filePath=${encodeNavigationArgument(filePath)}&serverId=${encodeNavigationArgument(serverId)}"
         }
     }
 

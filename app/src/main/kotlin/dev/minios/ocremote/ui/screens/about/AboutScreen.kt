@@ -1,4 +1,5 @@
 package dev.minios.ocremote.ui.screens.about
+import dev.minios.ocremote.ui.components.readableContentWidth
 
 import com.composables.icons.lucide.*
 import dev.minios.ocremote.ui.components.backIcon
@@ -8,6 +9,8 @@ import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -36,6 +39,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AboutScreen(
+    showTopBar: Boolean = true,
+    onOpenUpdateDetails: () -> Unit = {},
     onNavigateBack: () -> Unit = {},
     viewModel: AboutViewModel = hiltViewModel(),
 ) {
@@ -47,14 +52,15 @@ fun AboutScreen(
     val cardColor = if (isAmoled) Color.Black else MaterialTheme.colorScheme.surfaceContainer
 
     val readyUpdate = updateState as? UpdateState.ReadyToInstall
-    LaunchedEffect(readyUpdate?.apkPath) {
-        readyUpdate?.let { launchInstaller(it.apkPath) }
+    val lifecycleState by androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    LaunchedEffect(readyUpdate?.apkPath, lifecycleState) {
+        if (lifecycleState == androidx.lifecycle.Lifecycle.State.RESUMED) readyUpdate?.let { launchInstaller(it.apkPath) }
     }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
-            TopAppBar(
+            if (showTopBar) TopAppBar(
                 title = { Text(stringResource(R.string.about_title)) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
@@ -75,6 +81,8 @@ fun AboutScreen(
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.surface)
                 .padding(padding)
+                .readableContentWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -153,6 +161,11 @@ fun AboutScreen(
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 )
                 val buttonModifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)
+                if (updateState is UpdateState.Available || (updateState as? UpdateState.Error)?.release != null) {
+                    TextButton(onClick = onOpenUpdateDetails, modifier = Modifier.padding(horizontal = 16.dp)) {
+                        Text(stringResource(R.string.update_whats_new))
+                    }
+                }
                 when (val state = updateState) {
                     UpdateState.Idle, UpdateState.UpToDate -> AppPrimaryButton(
                         onClick = viewModel::checkForUpdates,

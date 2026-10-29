@@ -1,5 +1,8 @@
 package dev.minios.ocremote.ui.screens.chat
 
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+
 import dev.minios.ocremote.logging.AppLogger as Log
 import dev.minios.ocremote.BuildConfig
 import dev.minios.ocremote.R
@@ -15,6 +18,11 @@ import dev.minios.ocremote.data.api.OpenCodeApi
 import dev.minios.ocremote.data.api.PromptPart
 import dev.minios.ocremote.data.api.ProviderInfo
 import dev.minios.ocremote.data.api.ServerConnection
+import dev.minios.ocremote.data.api.ServerProtocol
+import dev.minios.ocremote.data.api.ServerProtocolRegistry
+import dev.minios.ocremote.data.api.V2InboxItem
+import dev.minios.ocremote.data.repository.V2InboxInfo
+import dev.minios.ocremote.data.repository.V2InboxState
 import dev.minios.ocremote.data.repository.DraftRepository
 import dev.minios.ocremote.data.repository.Draft
 import dev.minios.ocremote.data.repository.EventReducer
@@ -42,6 +50,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
 import javax.inject.Inject
 
 private const val TAG = "ChatViewModel"
@@ -73,6 +82,7 @@ internal fun descendantSessionIds(sessions: List<Session>, rootSessionId: String
 }
 
 data class ChatUiState(
+    val serverSupportsSharing: Boolean = true,
     val sessionTitle: String = "",
     val sessionLoaded: Boolean = false,
     val parentSessionId: String? = null,
@@ -238,6 +248,7 @@ class ChatViewModel @Inject constructor(
     private val pendingPromptRepository: PendingPromptRepository,
     private val connectionStateRepository: ServerConnectionStateRepository,
     private val voiceController: VoiceController,
+    private val sessionWorkspace: dev.minios.ocremote.data.repository.SessionWorkspaceRepository,
 ) : ViewModel() {
 
     @Volatile
@@ -268,23 +279,92 @@ class ChatViewModel @Inject constructor(
     val serverName: String = savedStateHandle.get<String>("serverName").orEmpty()
     val serverId: String = savedStateHandle.get<String>("serverId").orEmpty()
     val sessionId: String = savedStateHandle.get<String>("sessionId").orEmpty()
+    val workspaceKey: String get() = "$serverId:$sessionId"
+    val restoredView = sessionWorkspace.snapshot(workspaceKey)
+    fun saveView(snapshot: dev.minios.ocremote.data.repository.ChatViewSnapshot) {
+        sessionWorkspace.saveSnapshot(workspaceKey, snapshot)
+        saveDraft()
+    }
+    fun saveWorkspaceTitle(title: String) {
+        viewModelScope.launch {
+            if (settingsRepository.sessionFeatures.first().tabs) sessionWorkspace.updateTitle(workspaceKey, title)
+        }
+    }
+    val readingAutoHide = settingsRepository.readingAutoHide.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+    val readingHideStatus = settingsRepository.readingHideStatus.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+    val readingHideNavigation = settingsRepository.readingHideNavigation.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     private val conn = ServerConnection.from(serverUrl, username, password.ifEmpty { null })
+    private fun isV2Connection() = ServerProtocolRegistry.knownProtocol(conn) == ServerProtocol.V2
     private fun isServerConnected(): Boolean = serverId in connectionStateRepository.connectedServerIds.value
 
     private val _isLoading = MutableStateFlow(true)
+    private val _screenActive = MutableStateFlow(false)
+    fun setScreenActive(active: Boolean) {
+        if (!active && _screenActive.value) sessionWorkspace.markViewed(workspaceKey)
+        _screenActive.value = active
+        if (!active) saveDraft()
+    }
     private var messageLoadJob: Job? = null
     private val _error = MutableStateFlow<String?>(null)
     private val _isSending = MutableStateFlow(false)
     private val _pendingPrompts = MutableStateFlow<List<PendingPromptRecord>>(emptyList())
+    private val _inboxActions = MutableStateFlow<Set<String>>(emptySet())
+    val inboxActions = _inboxActions.asStateFlow()
+    val queuedInbox = eventReducer.v2Inbox.map { inbox ->
+        inbox.filterValues { it.sessionId == sessionId && it.state == V2InboxState.QUEUED && it.itemType == "user" }
+            .entries.sortedBy { it.value.timestamp }.map { (id, item) ->
+                val text = ((item.payload as? JsonObject)?.get("text") as? kotlinx.serialization.json.JsonPrimitive)
+                    ?.content.orEmpty()
+                InboxQueueItem(id, text.take(500), item.delivery ?: "queue")
+            }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun updateInboxItem(id: String, delivery: String?, onResult: (Boolean) -> Unit) {
+        if (!isServerConnected() || id in _inboxActions.value) return
+        val item = eventReducer.v2Inbox.value[id]
+        if (item?.sessionId != sessionId || item.state != V2InboxState.QUEUED || item.itemType != "user") return
+        _inboxActions.update { it + id }
+        viewModelScope.launch {
+            try {
+                if (delivery == null) {
+                    api.cancelSessionInbox(conn, sessionId, id)
+                    // DELETE is a no-op if delivery won the race. Never delete a delivered message.
+                    try {
+                        val delivered = api.getMessage(conn, sessionId, id)
+                        eventReducer.mergeMessages(sessionId, listOf(delivered))
+                    } catch (e: dev.minios.ocremote.data.api.OpenCodeHttpException) {
+                        if (e.statusCode != 404) throw e
+                        Log.d(TAG, "Cancelled inbox item has no transcript entry")
+                        eventReducer.confirmV2InboxCancellation(sessionId, id)
+                    }
+                } else api.changeSessionInboxDelivery(conn, sessionId, id, delivery)
+                reconcileV2Inbox()
+                onResult(true)
+            } catch (e: Exception) {
+                e.rethrowCancellation()
+                Log.e(TAG, "Failed to update session inbox", e)
+                reconcileV2Inbox()
+                onResult(false)
+            } finally {
+                _inboxActions.update { it - id }
+            }
+        }
+    }
     private val _allProviders = MutableStateFlow<List<ProviderInfo>>(emptyList())
     private val _providers = MutableStateFlow<List<ProviderInfo>>(emptyList())
     private val _hiddenModels = MutableStateFlow<Set<String>>(emptySet())
     private val _defaultModels = MutableStateFlow<Map<String, String>>(emptyMap())
-    private val _selectedProviderId = MutableStateFlow<String?>(null)
-    private val _selectedModelId = MutableStateFlow<String?>(null)
-    // Track if the model was explicitly selected by the user to avoid overwriting it with defaults/history
-    private var isModelExplicitlySelected = false
+    private val _selectedModel = MutableStateFlow<ModelSelection?>(null)
+    private val _configuredModel = MutableStateFlow<ModelSelection?>(null)
+    private val _modelDefaultsReady = MutableStateFlow(false)
+    private var hiddenModelsLoaded = false
+    private var configLoaded = false
+    private var agentsLoaded = false
+    private var providersLoaded = false
+    private val _historyComplete = MutableStateFlow(false)
+    private val _historyLoaded = MutableStateFlow(false)
+    val historyLoaded: StateFlow<Boolean> = _historyLoaded
     /** The directory of this session's project — sent as x-opencode-directory so the server resolves the correct project context. */
     private var sessionDirectory: String? = eventReducer.sessions.value
         .firstOrNull { it.id == sessionId }
@@ -296,7 +376,7 @@ class ChatViewModel @Inject constructor(
     private val _agents = MutableStateFlow<List<AgentInfo>>(emptyList())
     /** Pair(agentName, explicitlySelected) — using a single flow avoids race between flag and value */
     private val _selectedAgent = MutableStateFlow("build" to false)
-    private val _selectedVariant = MutableStateFlow<String?>(null)
+    private val _selectedVariant = MutableStateFlow<Pair<String?, Boolean>>(null to false)
     private val _commands = MutableStateFlow<List<CommandInfo>>(emptyList())
     private val terminalWorkspace = ServerTerminalRegistry.workspaceFor(serverId, api, conn)
     val terminalTabs: StateFlow<List<TerminalTabUi>> = terminalWorkspace.tabList
@@ -361,6 +441,14 @@ class ChatViewModel @Inject constructor(
     val keepScreenOn = settingsRepository.keepScreenOn.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5000), false
     )
+    fun setCompressImageAttachments(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setCompressImageAttachments(enabled) }
+    }
+    val desktopFullWidthChat = settingsRepository.desktopFullWidthChat.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    fun setDesktopFullWidthChat(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setDesktopFullWidthChat(enabled) }
+    }
+
     val compressImageAttachments = settingsRepository.compressImageAttachments.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5000), true
     )
@@ -406,8 +494,8 @@ class ChatViewModel @Inject constructor(
         _isLoading,
         _error,
         _isSending,
-        _selectedProviderId,
-        _selectedModelId,
+        _selectedModel,
+        _configuredModel,
         _allProviders,
         _providers,
         _defaultModels,
@@ -419,6 +507,9 @@ class ChatViewModel @Inject constructor(
         _isLoadingOlder,
         _pendingPrompts,
         eventReducer.promptDeliveries,
+        _hiddenModels,
+        _modelDefaultsReady,
+        _historyComplete,
     ) { args ->
         @Suppress("UNCHECKED_CAST")
         val allSessions = args[0] as List<Session>
@@ -429,8 +520,8 @@ class ChatViewModel @Inject constructor(
         val loading = args[5] as Boolean
         val error = args[6] as String?
         val sending = args[7] as Boolean
-        val selProviderId = args[8] as String?
-        val selModelId = args[9] as String?
+        val selectedModel = args[8] as ModelSelection?
+        val configuredModel = args[9] as ModelSelection?
         val allProviders = args[10] as List<ProviderInfo>
         val providers = args[11] as List<ProviderInfo>
         val defaultModels = args[12] as Map<String, String>
@@ -439,12 +530,15 @@ class ChatViewModel @Inject constructor(
         val agentSelection = args[14] as Pair<String, Boolean>
         val selectedAgent = agentSelection.first
         val isAgentExplicitlySelected = agentSelection.second
-        val selectedVariant = args[15] as String?
+        val variantSelection = args[15] as Pair<String?, Boolean>
         val commands = args[16] as List<CommandInfo>
         val hasOlderMessages = args[17] as Boolean
         val isLoadingOlder = args[18] as Boolean
         val pendingPrompts = args[19] as List<PendingPromptRecord>
         val promptDeliveries = args[20] as Map<String, PromptDeliveryInfo>
+        val hiddenModels = args[21] as Set<String>
+        val defaultsReady = args[22] as Boolean
+        val historyComplete = args[23] as Boolean
         fun deliveryFor(messageId: String) = when (promptDeliveries[messageId]?.state) {
             PromptDeliveryState.PROMOTED -> MessageDelivery.PROMOTED
             else -> MessageDelivery.QUEUED
@@ -481,41 +575,31 @@ class ChatViewModel @Inject constructor(
             )
         }
 
-        // Resolve model: explicit selection > last user message's model > provider default
-        var effectiveProviderId = selProviderId
-        var effectiveModelId = selModelId
-
-        // If no explicit selection, try to resolve from history
-        if (!isModelExplicitlySelected) {
-             val lastUserWithModel = sessionMessages
-                .filterIsInstance<Message.User>()
-                .lastOrNull { it.model != null }
-             if (lastUserWithModel?.model != null) {
-                 effectiveProviderId = lastUserWithModel.model.providerId
-                 effectiveModelId = lastUserWithModel.model.modelId
-             } else if (effectiveModelId == null && defaultModels.isNotEmpty()) {
-                 // Fallback to default if nothing in history and nothing selected
-                 val entry = defaultModels.entries.first()
-                 effectiveProviderId = entry.key
-                 effectiveModelId = entry.value
-             }
-        }
-
         // Resolve agent from last user message if not explicitly changed
         val effectiveAgent = if (!isAgentExplicitlySelected) {
-            val lastUserAgent = sessionMessages
+            val lastUserAgent = modelSelectionHistory(sessionMessages, revertState)
                 .filterIsInstance<Message.User>()
-                .lastOrNull { it.agent != null }
+                .filter { it.agent != null }
+                .maxByOrNull { it.time.created }
                 ?.agent
-            lastUserAgent ?: selectedAgent
+            session?.agent ?: lastUserAgent ?: selectedAgent
         } else {
             selectedAgent
         }
 
-        // Keep raw state in sync so sendParts()/runShellCommand() always use the displayed value
-        if (effectiveAgent != selectedAgent && !isAgentExplicitlySelected) {
-            _selectedAgent.value = effectiveAgent to false
-        }
+        val effectiveModel = resolveChatModelSelection(
+            selected = selectedModel,
+            messages = sessionMessages,
+            configuredModel = configuredModel,
+            agentModel = agents.firstOrNull { it.name == effectiveAgent }?.model,
+            providers = providers,
+            catalogLoaded = allProviders.any { it.models.isNotEmpty() },
+            hasHiddenModels = hiddenModels.isNotEmpty(),
+            defaultsReady = defaultsReady,
+            revert = revertState,
+            historyComplete = historyComplete,
+            sessionModel = session?.model,
+        )
 
         // Compute cost/token totals from assistant messages
         val assistantMessages = sessionMessages.filterIsInstance<Message.Assistant>()
@@ -543,25 +627,14 @@ class ChatViewModel @Inject constructor(
             assistantMessages = assistantMessages.size,
         )
 
-        // Resolve available variants for the currently selected model.
-        // If selected model is no longer visible (filtered out), fall back to first visible model.
-        var currentModel = if (effectiveProviderId != null && effectiveModelId != null) {
-            providers.find { it.id == effectiveProviderId }
-                ?.models?.get(effectiveModelId)
-        } else null
-        if (currentModel == null) {
-            val firstProvider = providers.firstOrNull()
-            val firstModel = firstProvider?.models?.values?.firstOrNull()
-            if (firstProvider != null && firstModel != null) {
-                effectiveProviderId = firstProvider.id
-                effectiveModelId = firstModel.id
-                currentModel = firstModel
-            }
-        }
+        val currentModel = providers.find { it.id == effectiveModel?.providerId }
+            ?.models?.get(effectiveModel?.modelId)
         // Match the Web UI by preserving the variant order supplied by the server.
         val availableVariants = currentModel?.variants?.keys?.toList() ?: emptyList()
 
         ChatUiState(
+            serverSupportsSharing = dev.minios.ocremote.data.api.ServerProtocolRegistry.knownProtocol(conn) !=
+                dev.minios.ocremote.data.api.ServerProtocol.V2,
             sessionTitle = session?.title ?: "Chat",
             sessionLoaded = session != null,
             parentSessionId = session?.parentId,
@@ -576,15 +649,17 @@ class ChatViewModel @Inject constructor(
             providers = providers,
             hasServerModelCatalog = allProviders.any { it.models.isNotEmpty() },
             defaultModels = defaultModels,
-            selectedProviderId = effectiveProviderId,
-            selectedModelId = effectiveModelId,
+            selectedProviderId = effectiveModel?.providerId,
+            selectedModelId = effectiveModel?.modelId,
             totalCost = totalCost,
             totalInputTokens = totalInputTokens,
             totalOutputTokens = totalOutputTokens,
             agents = agents.filter { it.mode != "subagent" && !it.hidden },
             selectedAgent = effectiveAgent,
             variantNames = availableVariants,
-            selectedVariant = if (selectedVariant != null && selectedVariant in availableVariants) selectedVariant else null,
+            selectedVariant = (if (variantSelection.second) variantSelection.first
+                else if (selectedModel == null) session?.model?.variant else null)
+                ?.takeIf { it in availableVariants },
             commands = commands,
             hasOlderMessages = hasOlderMessages,
             isLoadingOlder = isLoadingOlder,
@@ -602,22 +677,42 @@ class ChatViewModel @Inject constructor(
     init {
         _pendingPrompts.value = pendingPromptRepository.getForSession(sessionId)
         viewModelScope.launch {
-            eventReducer.messages.collect { messagesBySession ->
+            combine(eventReducer.messages, eventReducer.v2Inbox) { messages, inbox -> messages to inbox }
+                .collect { (messagesBySession, inbox) ->
                 val confirmedIds = messagesBySession[sessionId].orEmpty().mapTo(mutableSetOf()) { it.id }
+                val cancelledIds = inbox.filterValues {
+                    it.sessionId == sessionId && it.state == V2InboxState.CANCELLED
+                }.keys
                 val confirmedPending = _pendingPrompts.value.filter {
-                    it.messageId in confirmedIds
+                    it.messageId in confirmedIds || it.messageId in cancelledIds
                 }
                 if (confirmedPending.isNotEmpty()) {
                     val reconciledIds = confirmedPending.mapTo(mutableSetOf()) { it.messageId }
                     confirmedPending.forEach { pendingPromptRepository.remove(it.messageId) }
                     _pendingPrompts.value = _pendingPrompts.value.filterNot { it.messageId in reconciledIds }
                 }
+                val knownIds = _pendingPrompts.value.mapTo(mutableSetOf()) { it.messageId }
+                val restored = inbox.mapNotNull { (id, item) ->
+                    if (item.sessionId != sessionId || item.state != V2InboxState.QUEUED ||
+                        id in confirmedIds || id in knownIds || item.payload == null
+                    ) return@mapNotNull null
+                    val payload = item.payload as? JsonObject ?: return@mapNotNull null
+                    V2InboxItem(id, sessionId, item.itemType.orEmpty(), payload,
+                        item.delivery ?: "queue", TimeInfo(item.timestamp)).toPendingPromptRecord()
+                }
+                if (restored.isNotEmpty()) {
+                    restored.forEach(pendingPromptRepository::save)
+                    _pendingPrompts.value = (_pendingPrompts.value + restored).sortedBy { it.createdAt }
+                }
             }
         }
 
         // Restore draft from disk
-        val draft = draftRepository.getDraft(sessionId)
+        val draft = draftRepository.getDraft(workspaceKey) ?: draftRepository.getDraft(sessionId)
         if (draft != null) {
+            if (draft.selectedProviderId != null && draft.selectedModelId != null) {
+                _selectedModel.value = ModelSelection(draft.selectedProviderId, draft.selectedModelId)
+            }
             _draftText.value = draft.text
             _draftAttachmentUris.value = draft.imageUris
             if (draft.confirmedFilePaths.isNotEmpty()) {
@@ -627,14 +722,16 @@ class ChatViewModel @Inject constructor(
                 _selectedAgent.value = draft.selectedAgent to true
             }
             if (!draft.selectedVariant.isNullOrBlank()) {
-                _selectedVariant.value = draft.selectedVariant
+                _selectedVariant.value = draft.selectedVariant to true
             }
         }
 
         viewModelScope.launch {
             settingsRepository.hiddenModels(serverId).collect { hidden ->
                 _hiddenModels.value = hidden
+                hiddenModelsLoaded = true
                 applyProviderFilter()
+                _modelDefaultsReady.value = providersLoaded && configLoaded && agentsLoaded
             }
         }
 
@@ -646,13 +743,19 @@ class ChatViewModel @Inject constructor(
 
         viewModelScope.launch {
             currentMessageLimit = settingsRepository.initialMessageCount.first()
-            connectionStateRepository.connectedServerIds
-                .map { serverId in it }
+            combine(connectionStateRepository.connectedServerIds, _screenActive) { ids, active ->
+                active to (serverId in ids)
+            }
                 .distinctUntilChanged()
-                .collectLatest { connected ->
+                .collectLatest { (active, connected) ->
                     terminalWorkspace.setServerAvailable(connected)
-                    if (connected) {
+                    if (active && connected) {
+                        _modelDefaultsReady.value = false
+                        configLoaded = false
+                        agentsLoaded = false
+                        providersLoaded = false
                         loadSession()
+                        reconcileV2Inbox()
                         loadMessages()
                         loadPendingRequests()
                         loadProviders()
@@ -669,7 +772,13 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             while (true) {
                 delay(3_000)
-                if (isServerConnected()) reconcileActiveStatus()
+                if (_screenActive.value && isServerConnected()) {
+                    if (isV2Connection()) {
+                        reconcileV2Inbox()
+                        loadPendingRequests()
+                    }
+                    reconcileActiveStatus()
+                }
             }
         }
 
@@ -752,6 +861,27 @@ class ChatViewModel @Inject constructor(
         voiceController.speak(text)
     }
 
+    private suspend fun reconcileV2Inbox() {
+        if (!isV2Connection()) return
+        try {
+            val revision = eventReducer.captureV2InboxRevision()
+            val session = api.getSession(conn, sessionId, sessionDirectory)
+            val inbox = api.listSessionInbox(conn, sessionId)
+            eventReducer.upsertSession(serverId, session)
+            eventReducer.reconcileV2Inbox(
+                sessionId,
+                inbox.associate { item ->
+                    item.id to V2InboxInfo(item.sessionId, V2InboxState.QUEUED, item.delivery,
+                        item.payload, item.time.created, item.type)
+                },
+                revision,
+            )
+        } catch (e: Exception) {
+            e.rethrowCancellation()
+            Log.e(TAG, "Failed to reconcile v2 session inbox", e)
+        }
+    }
+
     private suspend fun reconcileActiveStatus() {
         val localStatus = eventReducer.sessionStatuses.value[sessionId]
         val hasRunningTool = eventReducer.messages.value[sessionId].orEmpty().any { message ->
@@ -759,11 +889,12 @@ class ChatViewModel @Inject constructor(
                 part is Part.Tool && part.state is ToolState.Running
             }
         }
-        if (localStatus !is SessionStatus.Busy && !hasRunningTool) return
+        val hasPending = _pendingPrompts.value.isNotEmpty()
+        if (localStatus !is SessionStatus.Busy && !hasRunningTool && !hasPending) return
 
         try {
             val remoteStatus = api.listSessionStatuses(conn, sessionDirectory)[sessionId] ?: SessionStatus.Idle
-            if (remoteStatus is SessionStatus.Idle && (localStatus !is SessionStatus.Idle || hasRunningTool)) {
+            if (hasPending || remoteStatus is SessionStatus.Idle && (localStatus !is SessionStatus.Idle || hasRunningTool)) {
                 val messages = api.listMessages(conn, sessionId, limit = 50, directory = sessionDirectory)
                 eventReducer.mergeMessages(sessionId, messages)
             }
@@ -811,6 +942,7 @@ class ChatViewModel @Inject constructor(
     fun loadMessages() {
         if (!isServerConnected()) return
         messageLoadJob?.cancel()
+        _historyComplete.value = false
         messageLoadJob = viewModelScope.launch {
             _isLoading.value = true
             _error.value = null
@@ -830,6 +962,8 @@ class ChatViewModel @Inject constructor(
 
                 olderMessagesCursor = nextCursor
                 eventReducer.mergeMessages(sessionId, messages)
+                _historyComplete.value = firstPage.nextCursor == null
+                _historyLoaded.value = true
                 reconcilePendingPrompts(
                     authoritative = messages,
                     minimumAgeMs = 10_000L,
@@ -874,6 +1008,7 @@ class ChatViewModel @Inject constructor(
                     messages += olderPage.messages
                     knownIds += olderPage.messages.map { it.info.id }
                     eventReducer.mergeMessages(sessionId, olderPage.messages)
+                    _historyComplete.value = olderPage.nextCursor == null
                     if (needsRevertHistory) recoveryPages++
                     nextCursor = olderPage.nextCursor?.takeUnless { it == requestedCursor }
                     olderMessagesCursor = nextCursor
@@ -906,6 +1041,8 @@ class ChatViewModel @Inject constructor(
                         val messages = page.messages
                         olderMessagesCursor = page.nextCursor
                         eventReducer.mergeMessages(sessionId, messages)
+                        _historyComplete.value = page.nextCursor == null
+                        _historyLoaded.value = true
                         _hasOlderMessages.value = page.nextCursor != null
                         if (BuildConfig.DEBUG) Log.d(TAG, "Retry succeeded: loaded ${messages.size} messages (limit=$currentMessageLimit)")
                     } catch (retryEx: Exception) {
@@ -963,6 +1100,7 @@ class ChatViewModel @Inject constructor(
                         directory = sessionDirectory,
                     )
                     messages += page.messages
+                    _historyComplete.value = page.nextCursor == null
                     knownIds += page.messages.map { it.info.id }
                     recoveryPages++
                     nextCursor = page.nextCursor?.takeUnless { it == requestedCursor }
@@ -1060,14 +1198,22 @@ class ChatViewModel @Inject constructor(
 
     private suspend fun loadProviders() {
         try {
-            val response = api.getProviders(conn)
+            val response = api.getProviders(conn, sessionDirectory)
             _allProviders.value = response.providers
             applyProviderFilter()
             _defaultModels.value = response.default
+            providersLoaded = true
             if (BuildConfig.DEBUG) Log.d(TAG, "Loaded ${response.providers.size} providers, defaults: ${response.default}")
         } catch (e: Exception) {
             e.rethrowCancellation()
             Log.e(TAG, "Failed to load providers", e)
+        }
+        try {
+            _configuredModel.value = configuredModelSelection(api.getConfig(conn, sessionDirectory).model)
+            configLoaded = true
+        } catch (e: Exception) {
+            e.rethrowCancellation()
+            Log.e(TAG, "Failed to load configured chat model", e)
         }
     }
 
@@ -1087,8 +1233,10 @@ class ChatViewModel @Inject constructor(
 
     private suspend fun loadAgents() {
         try {
-            val agents = api.listAgents(conn)
+            val agents = api.listAgents(conn, sessionDirectory)
             _agents.value = agents
+            agentsLoaded = true
+            _modelDefaultsReady.value = providersLoaded && configLoaded && hiddenModelsLoaded
             if (BuildConfig.DEBUG) Log.d(TAG, "Loaded ${agents.size} agents: ${agents.map { it.name }}")
         } catch (e: Exception) {
             e.rethrowCancellation()
@@ -1112,15 +1260,45 @@ class ChatViewModel @Inject constructor(
     }
 
     fun selectVariant(name: String?) {
-        _selectedVariant.value = name?.takeIf { it in uiState.value.variantNames }
+        val model = currentModelSelection()
+        val variants = _providers.value.firstOrNull { it.id == model?.providerId }
+            ?.models?.get(model?.modelId)?.variants.orEmpty()
+        _selectedVariant.value = name?.takeIf { it in variants } to true
     }
 
     fun selectModel(providerId: String, modelId: String) {
-        _selectedProviderId.value = providerId
-        _selectedModelId.value = modelId
-        _selectedVariant.value = null
-        isModelExplicitlySelected = true
+        _selectedVariant.value = null to false
+        _selectedModel.value = ModelSelection(providerId, modelId)
     }
+
+    private fun currentAgentSelection(): String {
+        val (selected, explicit) = _selectedAgent.value
+        val session = eventReducer.sessions.value.firstOrNull { it.id == sessionId }
+        if (!explicit && session?.agent != null) return session.agent
+        val revert = session?.revert
+        return if (explicit) selected else modelSelectionHistory(
+            eventReducer.messages.value[sessionId].orEmpty(),
+            revert,
+        )
+            .filterIsInstance<Message.User>()
+            .filter { it.agent != null }
+            .maxByOrNull { it.time.created }?.agent ?: selected
+    }
+
+    private fun currentModelSelection(agent: String = currentAgentSelection()): ModelSelection? =
+        resolveChatModelSelection(
+            selected = _selectedModel.value,
+            messages = eventReducer.messages.value[sessionId].orEmpty(),
+            configuredModel = _configuredModel.value,
+            agentModel = _agents.value.firstOrNull { it.name == agent }?.model,
+            providers = _providers.value,
+            catalogLoaded = _allProviders.value.any { it.models.isNotEmpty() },
+            hasHiddenModels = _hiddenModels.value.isNotEmpty(),
+            defaultsReady = _modelDefaultsReady.value,
+            revert = eventReducer.sessions.value.firstOrNull { it.id == sessionId }?.revert,
+            historyComplete = _historyComplete.value,
+            sessionModel = eventReducer.sessions.value.firstOrNull { it.id == sessionId }?.model,
+        )
 
     // ============ @ File Mention Search ============
 
@@ -1218,7 +1396,9 @@ class ChatViewModel @Inject constructor(
     fun clearDraft() {
         _draftText.value = ""
         _draftAttachmentUris.value = emptyList()
+        draftRepository.clearDraft(workspaceKey)
         draftRepository.clearDraft(sessionId)
+        sessionWorkspace.updateDraft(workspaceKey, false)
     }
 
     /** Persist current draft to disk. */
@@ -1229,9 +1409,12 @@ class ChatViewModel @Inject constructor(
             imageUris = _draftAttachmentUris.value,
             confirmedFilePaths = _confirmedFilePaths.value.toList(),
             selectedAgent = agentPair.first.takeIf { agentPair.second },
-            selectedVariant = _selectedVariant.value
+            selectedVariant = _selectedVariant.value.first,
+            selectedProviderId = _selectedModel.value?.providerId,
+            selectedModelId = _selectedModel.value?.modelId,
         )
-        draftRepository.saveDraft(sessionId, draft)
+        draftRepository.saveDraft(workspaceKey, draft)
+        sessionWorkspace.updateDraft(workspaceKey, draft.text.isNotBlank() || draft.imageUris.isNotEmpty())
     }
 
     override fun onCleared() {
@@ -1268,10 +1451,15 @@ class ChatViewModel @Inject constructor(
         _isSending.value = true
         voiceController.stopSpeaking()
 
-        val model = if (_selectedProviderId.value != null && _selectedModelId.value != null) {
-            ModelSelection(_selectedProviderId.value!!, _selectedModelId.value!!)
-        } else {
-            null
+        val agent = currentAgentSelection()
+        val model = currentModelSelection(agent)
+        val requestModel = if (isV2Connection() && _selectedModel.value == null && !_selectedVariant.value.second) null else model
+        val requestAgent = if (isV2Connection() && !_selectedAgent.value.second) null else agent
+        val variant = (if (_selectedVariant.value.second) _selectedVariant.value.first
+            else if (_selectedModel.value == null) eventReducer.sessions.value.firstOrNull { it.id == sessionId }?.model?.variant
+            else null)?.takeIf {
+            it in _providers.value.firstOrNull { provider -> provider.id == model?.providerId }
+                ?.models?.get(model?.modelId)?.variants.orEmpty()
         }
         val messageId = MessageIdGenerator.next()
         val draftSnapshot = Draft(
@@ -1279,15 +1467,15 @@ class ChatViewModel @Inject constructor(
             imageUris = _draftAttachmentUris.value,
             confirmedFilePaths = _confirmedFilePaths.value.toList(),
             selectedAgent = _selectedAgent.value.first.takeIf { _selectedAgent.value.second },
-            selectedVariant = _selectedVariant.value,
+            selectedVariant = _selectedVariant.value.first,
         )
         val pending = PendingPromptRecord(
             messageId = messageId,
             sessionId = sessionId,
             parts = parts,
             model = model,
-            agent = uiState.value.selectedAgent,
-            variant = _selectedVariant.value,
+            agent = agent,
+            variant = variant,
             directory = sessionDirectory,
             createdAt = System.currentTimeMillis(),
         )
@@ -1301,18 +1489,21 @@ class ChatViewModel @Inject constructor(
                     sessionId = sessionId,
                     messageId = messageId,
                     parts = parts,
-                    model = model,
-                    agent = uiState.value.selectedAgent,
-                    variant = _selectedVariant.value,
+                    model = requestModel,
+                    agent = requestAgent,
+                    variant = variant,
                     directory = sessionDirectory
                 )
                 eventReducer.updateSessionStatus(sessionId, SessionStatus.Busy)
+                reconcileV2Inbox()
                 if (BuildConfig.DEBUG) Log.d(TAG, "Sent prompt to session $sessionId (${parts.size} parts)")
                 reconcilePendingMessage(messageId)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send message", e)
                 _error.value = e.message ?: "Failed to send message"
-                val definiteHttpFailure = e is RuntimeException && e.message?.startsWith("prompt_async failed:") == true
+                val definiteHttpFailure = e is dev.minios.ocremote.data.api.ServerAuthenticationException ||
+                    (e is dev.minios.ocremote.data.api.OpenCodeHttpException && e.statusCode in 400..499) ||
+                    (e is RuntimeException && e.message?.startsWith("prompt_async failed:") == true)
                 if (definiteHttpFailure) {
                     eventReducer.updateSessionStatus(sessionId, SessionStatus.Idle)
                     pendingPromptRepository.remove(messageId)
@@ -1349,6 +1540,8 @@ class ChatViewModel @Inject constructor(
     }
 
     private fun reconcilePendingPrompts(authoritative: List<MessageWithParts>, minimumAgeMs: Long) {
+        // Absence from transcript does not disprove durable admission to the V2 inbox.
+        if (isV2Connection()) return
         val staleIds = missingPendingPromptIds(
             pending = _pendingPrompts.value,
             authoritative = authoritative,
@@ -1381,7 +1574,7 @@ class ChatViewModel @Inject constructor(
         )
         _draftText.value = draft.text
         _draftAttachmentUris.value = draft.imageUris
-        draftRepository.saveDraft(sessionId, draft)
+        draftRepository.saveDraft(workspaceKey, draft)
         _revertedDraftEvent.tryEmit(RevertedDraftPayload(draft.text, draft.imageUris))
     }
 
@@ -1390,7 +1583,7 @@ class ChatViewModel @Inject constructor(
         _draftText.value = snapshot.text
         _draftAttachmentUris.value = snapshot.imageUris
         _confirmedFilePaths.value = snapshot.confirmedFilePaths.toSet()
-        draftRepository.saveDraft(sessionId, snapshot)
+        draftRepository.saveDraft(workspaceKey, snapshot)
         _revertedDraftEvent.tryEmit(RevertedDraftPayload(snapshot.text, snapshot.imageUris))
     }
 
@@ -1559,15 +1752,13 @@ class ChatViewModel @Inject constructor(
         }
         viewModelScope.launch {
             try {
-                val state = uiState.value
-                val providerId = state.selectedProviderId
-                val modelId = state.selectedModelId
-                if (providerId == null || modelId == null) {
+                val model = currentModelSelection()
+                if (model == null) {
                     Log.e(TAG, "Cannot compact: no model selected")
                     onResult(false)
                     return@launch
                 }
-                api.summarizeSession(conn, sessionId, providerId, modelId)
+                api.summarizeSession(conn, sessionId, model.providerId, model.modelId)
                 if (BuildConfig.DEBUG) Log.d(TAG, "Compacted session $sessionId")
                 onResult(true)
             } catch (e: Exception) {
@@ -1733,7 +1924,7 @@ class ChatViewModel @Inject constructor(
         }
         viewModelScope.launch {
             try {
-                api.unrevertSession(conn, sessionId)
+                eventReducer.upsertSession(serverId, api.unrevertSession(conn, sessionId))
                 if (BuildConfig.DEBUG) Log.d(TAG, "Unreverted session $sessionId")
                 onResult(true)
             } catch (e: Exception) {
@@ -1847,19 +2038,15 @@ class ChatViewModel @Inject constructor(
             onResult(false)
             return
         }
+        val agent = currentAgentSelection()
+        val model = currentModelSelection(agent)
         viewModelScope.launch {
             try {
-                val model = if (_selectedProviderId.value != null && _selectedModelId.value != null) {
-                    ModelSelection(
-                        providerId = _selectedProviderId.value!!,
-                        modelId = _selectedModelId.value!!
-                    )
-                } else null
                 val ok = api.runShellCommand(
                     conn = conn,
                     sessionId = sessionId,
                     command = trimmed,
-                    agent = uiState.value.selectedAgent,
+                    agent = agent,
                     model = model,
                     directory = sessionDirectory
                 )
@@ -1921,6 +2108,10 @@ class ChatViewModel @Inject constructor(
     fun sendTerminalInput(input: String) {
         if (!isServerConnected()) return
         terminalWorkspace.sendActiveInput(input)
+    }
+
+    fun sendTerminalTabInput(tabId: String, input: String) {
+        if (isServerConnected()) terminalWorkspace.sendTabInput(tabId, input)
     }
 
     fun clearTerminalBuffer() {

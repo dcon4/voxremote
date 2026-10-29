@@ -147,10 +147,6 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             updateRepository.state.collect { state -> _uiState.update { it.copy(updateState = state) } }
         }
-        viewModelScope.launch {
-            updateRepository.restore()
-            updateRepository.check(manual = false)
-        }
     }
 
     private fun observeSettings() {
@@ -265,7 +261,11 @@ class HomeViewModel @Inject constructor(
             launch {
                 service.connectingServerIds.collect { ids ->
                     if (BuildConfig.DEBUG) Log.d(TAG, "Service connecting server IDs changed: $ids")
-                    _uiState.update { it.copy(connectingServerIds = ids) }
+                    _uiState.update { state ->
+                        state.copy(connectingServerIds = (
+                            ids + connectionAttemptJobs.filterValues { it.isActive }.keys
+                        ) - service.connectedServerIds.value)
+                    }
                 }
             }
         }
@@ -915,6 +915,7 @@ class HomeViewModel @Inject constructor(
             it.copy(
                 connectedServerIds = it.connectedServerIds - serverId,
                 connectingServerIds = it.connectingServerIds - serverId,
+                connectionErrors = it.connectionErrors - serverId,
             )
         }
     }

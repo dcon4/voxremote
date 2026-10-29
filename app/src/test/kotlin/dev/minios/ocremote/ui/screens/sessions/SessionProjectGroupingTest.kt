@@ -11,6 +11,7 @@ class SessionProjectGroupingTest {
     fun groupsByProjectIdBeforeDirectoryFallback() {
         val projects = listOf(
             Project(id = "project", worktree = "/repo", name = "Repository"),
+            Project(id = "other", worktree = "/elsewhere", name = "Other"),
         )
         val item = item("session", "/elsewhere", projectId = "project")
 
@@ -58,6 +59,86 @@ class SessionProjectGroupingTest {
     }
 
     @Test
+    fun globalSessionWithKnownProjectDirectoryGroupsByProject() {
+        val projects = listOf(
+            Project(id = "global", worktree = "/", name = "Global"),
+            Project(id = "project-a", worktree = "/home/user/projects/foo", name = "Foo"),
+        )
+
+        val group = buildProjectSessionGroups(
+            listOf(item("session", "/home/user/projects/foo", projectId = "global")),
+            projects,
+            "/home/user",
+            emptyMap(),
+            "server",
+        ).single()
+
+        assertEquals("project-a", group.projectId)
+        assertEquals("Foo", group.projectName)
+    }
+
+    @Test
+    fun globalSessionsInUnknownDirectoriesBecomeSeparateGroups() {
+        val projects = listOf(
+            Project(id = "global", worktree = "/", name = "Global"),
+        )
+
+        val groups = buildProjectSessionGroups(
+            listOf(
+                item("one", "/srv/alpha", projectId = "global", updated = 2),
+                item("two", "/srv/beta", projectId = "global", updated = 1),
+            ),
+            projects,
+            null,
+            emptyMap(),
+            "server",
+        )
+
+        assertEquals(listOf("/srv/alpha", "/srv/beta"), groups.map { it.directory })
+        assertEquals(listOf("directory:/srv/alpha", "directory:/srv/beta"), groups.map { it.projectId })
+    }
+
+    @Test
+    fun globalSessionsPreferMostSpecificNonGlobalProjectOverGlobalRoot() {
+        val projects = listOf(
+            Project(id = "global", worktree = "/", name = "Global"),
+            Project(id = "repo", worktree = "/repo", name = "Root"),
+            Project(id = "nested", worktree = "/repo/apps/mobile", name = "Mobile"),
+        )
+
+        val group = buildProjectSessionGroups(
+            listOf(item("session", "/repo/apps/mobile/src", projectId = "global")),
+            projects,
+            null,
+            emptyMap(),
+            "server",
+        ).single()
+
+        assertEquals("nested", group.projectId)
+        assertEquals("Mobile", group.projectName)
+    }
+
+    @Test
+    fun nonGlobalProjectIdStillTakesPrecedenceOverDirectory() {
+        val projects = listOf(
+            Project(id = "project", worktree = "/repo", name = "Repository"),
+            Project(id = "other", worktree = "/elsewhere", name = "Elsewhere"),
+        )
+
+        val group = buildProjectSessionGroups(
+            listOf(item("session", "/elsewhere/nested", projectId = "project")),
+            projects,
+            null,
+            emptyMap(),
+            "server",
+        ).single()
+
+        assertEquals("project", group.projectId)
+        assertEquals("Repository", group.projectName)
+        assertEquals("/repo", group.directory)
+    }
+
+    @Test
     fun favoriteSessionsLeadAndRespectExplicitOrder() {
         val sorted = sortSessionItems(
             listOf(
@@ -68,6 +149,129 @@ class SessionProjectGroupingTest {
         )
 
         assertEquals(listOf("first-favorite", "second-favorite", "newest"), sorted.map { it.session.id })
+    }
+
+    @Test
+    fun globalSessionMatchesRealProjectInsteadOfGlobalId() {
+        val group = buildProjectSessionGroups(
+            listOf(item("session", "/repo/apps/mobile/src", projectId = "global")),
+            listOf(
+                Project(id = "global", worktree = "/", name = "Global"),
+                Project(id = "root", worktree = "/repo", name = "Root"),
+                Project(id = "mobile", worktree = "/repo/apps/mobile", name = "Mobile"),
+            ),
+            null,
+            emptyMap(),
+            "server",
+        ).single()
+
+        assertEquals("mobile", group.projectId)
+        assertEquals("Mobile", group.projectName)
+    }
+
+    @Test
+    fun globalSessionsInUnknownDirectoriesRemainSeparate() {
+        val groups = buildProjectSessionGroups(
+            listOf(
+                item("one", "/srv/alpha", projectId = "global", updated = 2),
+                item("two", "/srv/beta", projectId = "global", updated = 1),
+            ),
+            listOf(Project(id = "global", worktree = "/", name = "Global")),
+            null,
+            emptyMap(),
+            "server",
+        )
+
+        assertEquals(listOf("directory:/srv/alpha", "directory:/srv/beta"), groups.map { it.projectId })
+    }
+
+    @Test
+    fun windowsGlobalSessionMatchesNestedProjectAndBranch() {
+        val group = buildProjectSessionGroups(
+            listOf(item("session", "C:\\repo\\mobile\\src", projectId = "global")),
+            listOf(
+                Project(id = "global", worktree = "C:\\", name = "Global"),
+                Project(id = "root", worktree = "C:\\repo"),
+                Project(id = "mobile", worktree = "C:\\repo\\mobile\\"),
+            ),
+            "C:\\repo\\",
+            mapOf(DirectoryScope("server", "C:/repo/mobile/") to "feature/windows"),
+            "server",
+        ).single()
+
+        assertEquals("mobile", group.projectId)
+        assertEquals("mobile", group.projectName)
+        assertEquals("C:\\repo\\mobile", group.directory)
+        assertEquals("feature/windows", group.branch)
+        assertEquals("~/mobile/src", group.sessionDirLabels["session"])
+    }
+
+    @Test
+    fun windowsFallbackGroupsEquivalentSeparatorsWithoutChangingApiPath() {
+        val groups = buildProjectSessionGroups(
+            listOf(
+                item("one", "D:\\repo\\", projectId = "global", updated = 3),
+                item("two", "D:/repo", projectId = "global", updated = 2),
+                item("other", "D:\\other", projectId = "global", updated = 1),
+            ),
+            emptyList(),
+            null,
+            emptyMap(),
+            "server",
+        )
+
+        assertEquals(2, groups.size)
+        assertEquals("directory:D:/repo", groups.first().projectId)
+        assertEquals("D:\\repo", groups.first().directory)
+        assertEquals("repo", groups.first().projectName)
+        assertEquals(listOf("one", "two"), groups.first().sessions.map { it.session.id })
+    }
+
+    @Test
+    fun windowsUncPathsMatchProjectRoots() {
+        val group = buildProjectSessionGroups(
+            listOf(item("session", "\\\\host\\share\\repo\\src", projectId = "global")),
+            listOf(Project(id = "repo", worktree = "\\\\host\\share\\repo\\")),
+            null,
+            emptyMap(),
+            "server",
+        ).single()
+
+        assertEquals("repo", group.projectId)
+        assertEquals("repo", group.projectName)
+        assertEquals("\\\\host\\share\\repo", group.directory)
+    }
+
+    @Test
+    fun windowsDriveRootIsPreservedAndEmptyProjectPathDoesNotCaptureSessions() {
+        val group = buildProjectSessionGroups(
+            listOf(item("session", "C:\\", projectId = "global")),
+            listOf(Project(id = "empty")),
+            null,
+            emptyMap(),
+            "server",
+        ).single()
+
+        assertEquals("directory:C:/", group.projectId)
+        assertEquals("C:\\", group.directory)
+    }
+
+    @Test
+    fun posixComparisonPreservesCaseAndBackslashesAndPathBoundaries() {
+        val groups = buildProjectSessionGroups(
+            listOf(
+                item("case", "/Repo", projectId = "global"),
+                item("boundary", "/repository", projectId = "global"),
+                item("backslash", "/repo\\src", projectId = "global"),
+            ),
+            listOf(Project(id = "repo", worktree = "/repo")),
+            null,
+            emptyMap(),
+            "server",
+        )
+
+        assertEquals(3, groups.size)
+        assertEquals(setOf("/Repo", "/repository", "/repo\\src"), groups.map { it.directory }.toSet())
     }
 
     @Test

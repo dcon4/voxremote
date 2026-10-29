@@ -41,6 +41,9 @@ import javax.inject.Inject
 
 private const val TAG = "SessionListViewModel"
 
+/** OpenCode's catch-all project id; not authoritative for grouping. */
+private const val GLOBAL_PROJECT_ID = "global"
+
 data class SessionListUiState(
     val sessionGroups: List<ProjectSessionGroup> = emptyList(),
     val projects: List<Project> = emptyList(),
@@ -70,31 +73,47 @@ internal fun buildProjectSessionGroups(
     branches: Map<DirectoryScope, String?>,
     serverId: String,
 ): List<ProjectSessionGroup> {
-    fun normalized(path: String) = path.trimEnd('/').ifEmpty { "/" }
+    fun isWindowsPath(path: String) = path.startsWith("\\\\") ||
+        (path.length >= 3 && path[0].isLetter() && path[1] == ':' && path[2] in "/\\")
+    fun normalized(path: String): String {
+        if (!isWindowsPath(path)) return path.trimEnd('/').ifEmpty { "/" }
+        val trimmed = path.trimEnd('/', '\\')
+        return if (trimmed.length == 2 && trimmed[1] == ':') trimmed + path[2] else trimmed
+    }
+    fun pathKey(path: String): String = normalized(path).let {
+        if (isWindowsPath(it)) it.replace('\\', '/') else it
+    }
+    fun within(directory: String, root: String) = directory == root ||
+        directory.startsWith(root.trimEnd('/') + "/")
     fun displayPath(path: String): String {
         val dir = normalized(path)
-        return if (!homeDir.isNullOrBlank() && (dir == homeDir || dir.startsWith("$homeDir/"))) {
-            "~" + dir.removePrefix(homeDir)
+        return if (!homeDir.isNullOrBlank() && within(pathKey(dir), pathKey(homeDir))) {
+            "~" + pathKey(dir).removePrefix(pathKey(homeDir).trimEnd('/'))
         } else {
             dir
         }
     }
     fun projectFor(session: Session): Project? {
-        projects.firstOrNull { it.id.isNotBlank() && it.id == session.projectId }?.let { return it }
-        val directory = normalized(session.directory)
+        // Global is a catch-all ID; its broad worktree must not swallow unrelated directories.
+        val isGlobalSession = session.projectId == GLOBAL_PROJECT_ID
+        if (!isGlobalSession) {
+            projects.firstOrNull { it.id.isNotBlank() && it.id == session.projectId }?.let { return it }
+        }
+        val directory = pathKey(session.directory)
         return projects
+            .filter { !isGlobalSession || it.id != GLOBAL_PROJECT_ID }
             .filter { project ->
-                val root = normalized(project.worktree.ifBlank { project.path })
-                directory == root || directory.startsWith("$root/")
+                val root = project.worktree.ifBlank { project.path }
+                root.isNotBlank() && within(directory, pathKey(root))
             }
-            .maxByOrNull { normalized(it.worktree.ifBlank { it.path }).length }
+            .maxByOrNull { pathKey(it.worktree.ifBlank { it.path }).length }
     }
 
     return sessions
         .groupBy { item ->
             val project = projectFor(item.session)
             project?.id?.takeIf { it.isNotBlank() }
-                ?: "directory:${normalized(item.session.directory)}"
+                ?: "directory:${pathKey(item.session.directory)}"
         }
         .map { (key, items) ->
             val sorted = sortSessionItems(items)
@@ -105,12 +124,12 @@ internal fun buildProjectSessionGroups(
                     ?: sorted.first().session.directory,
             )
             val branch = branches.entries.firstOrNull { (scope, _) ->
-                scope.serverId == serverId && normalized(scope.directory) == directory
+                scope.serverId == serverId && pathKey(scope.directory) == pathKey(directory)
             }?.value
             ProjectSessionGroup(
                 projectId = project?.id ?: key,
-                projectName = project?.displayName
-                    ?: directory.substringAfterLast('/').ifEmpty { "/" },
+                projectName = project?.name?.takeIf { it.isNotEmpty() }
+                    ?: pathKey(directory).trimEnd('/').substringAfterLast('/').ifEmpty { "/" },
                 directory = directory,
                 sessions = sorted,
                 branch = branch,
@@ -231,6 +250,7 @@ class SessionListViewModel @Inject constructor(
             favoriteSessionIds,
             sessionCategories,
             categoryAssignments,
+            settingsRepository.sessionFeatures,
         )
     ) { values ->
         val allSessions = values[0] as List<Session>
@@ -245,8 +265,9 @@ class SessionListViewModel @Inject constructor(
         val favoriteIds = values[9] as List<String>
         val categories = values[10] as List<SessionCategory>
         val assignments = values[11] as Map<String, String>
-        val favoriteOrder = favoriteIds.withIndex().associate { (index, id) -> id to index }
-        val categoriesById = categories.associateBy { it.id }
+        val features = values[12] as dev.minios.ocremote.domain.model.SessionFeatures
+        val favoriteOrder = if (features.favorites) favoriteIds.withIndex().associate { (index, id) -> id to index } else emptyMap()
+        val categoriesById = if (features.categories) categories.associateBy { it.id } else emptyMap()
 
         // Filter sessions belonging to this server
         val serverSessionIds = serverSessions[serverId] ?: emptySet()
@@ -278,7 +299,7 @@ class SessionListViewModel @Inject constructor(
             error = error,
             selectedIds = validSelectedIds,
             isSelectionMode = validSelectedIds.isNotEmpty(),
-            categories = categories,
+            categories = if (features.categories) categories else emptyList(),
         )
     }.stateIn(
         viewModelScope,
