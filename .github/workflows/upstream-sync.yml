@@ -1,0 +1,177 @@
+# Weekly upstream sync: fetch crim50n/oc-remote, attempt a merge, build and
+# test, then open a PR. If the merge conflicts or the build fails, open an
+# issue instead so a human/agent can finish it by hand.
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "17 14 * * 1"  # Mondays 14:17 UTC (9:17 AM CDT)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Check for new upstream commits
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh label create upstream-sync --repo "$GITHUB_REPOSITORY" \
+            --color 1d76db --description "Automated upstream OC Remote sync" || true
+
+          OPEN=$(gh pr list --label upstream-sync --state open --json number --jq 'length')
+          if [ "$OPEN" -gt 0 ]; then
+            echo "status=skip-open-pr" >> "$GITHUB_OUTPUT"
+            echo "An upstream-sync PR is already open; skipping."
+            exit 0
+          fi
+
+          git remote add upstream https://github.com/crim50n/oc-remote.git
+          git fetch upstream master
+
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "status=uptodate" >> "$GITHUB_OUTPUT"
+            echo "Already up to date with upstream/master."
+            exit 0
+          fi
+
+          echo "status=new" >> "$GITHUB_OUTPUT"
+          echo "commits=$(git rev-list --count HEAD..upstream/master)" >> "$GITHUB_OUTPUT"
+          git log --oneline HEAD..upstream/master > upstream_changes.txt
+          UPSTREAM_VERSION=$(git show upstream/master:update.json | grep versionName | sed 's/.*"versionName": "\([^"]*\)".*/\1/')
+          echo "upstream_version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
+
+          # Safety check: did upstream touch our voice/notification code?
+          BASE=$(git merge-base HEAD upstream/master)
+          VOICE_CHANGES=$(git diff --name-only "$BASE" upstream/master -- \
+            'app/src/main/kotlin/dev/minios/ocremote/voice/' \
+            'app/src/main/kotlin/dev/minios/ocremote/service/' | wc -l)
+          echo "voice_changes=$VOICE_CHANGES" >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream
+        if: steps.check.outputs.status == 'new'
+        id: merge
+        run: |
+          set -euo pipefail
+          git config user.name "dcon4"
+          git config user.email "dcon4@gmail.com"
+          BRANCH="sync-upstream-$(date -u +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          if git merge upstream/master --no-edit; then
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=conflicts" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=U > conflicted_files.txt || true
+            git merge --abort || true
+          fi
+
+      - name: Set up JDK 17
+        if: steps.merge.outputs.result == 'clean'
+        uses: actions/setup-java@0ab4596768b603586c0de567f2430c30f5b0d2b0 # v3.13.0
+        with:
+          distribution: 'adopt'
+          java-version: '17'
+
+      - name: Build and test
+        if: steps.merge.outputs.result == 'clean'
+        id: build
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug :app:testDebugUnitTest
+
+      - name: Create pull request
+        if: steps.merge.outputs.result == 'clean'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git push -u origin "${{ steps.merge.outputs.branch }}"
+
+          VOICE_NOTE="No upstream changes to voice or notification code."
+          if [ "${{ steps.check.outputs.voice_changes }}" != "0" ]; then
+            VOICE_NOTE="**WARNING:** upstream changed voice/notification files - review carefully before merging."
+          fi
+
+          echo "## Weekly upstream sync" > pr-body.md
+          echo "" >> pr-body.md
+          echo "Merges upstream [crim50n/oc-remote](https://github.com/crim50n/oc-remote) ${{ steps.check.outputs.upstream_version }} (${{ steps.check.outputs.commits }} new commits) into VoxRemote." >> pr-body.md
+          echo "" >> pr-body.md
+          echo "### Upstream changes" >> pr-body.md
+          echo '```' >> pr-body.md
+          cat upstream_changes.txt >> pr-body.md
+          echo '```' >> pr-body.md
+          echo "" >> pr-body.md
+          echo "### Safety" >> pr-body.md
+          echo "- $VOICE_NOTE" >> pr-body.md
+          echo "- Build and all unit tests passed in [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)." >> pr-body.md
+          echo "- Pull-request CI does not auto-trigger on token-created PRs; merging to main produces a fresh APK." >> pr-body.md
+          echo "" >> pr-body.md
+          echo "### Checklist" >> pr-body.md
+          echo "- [ ] Voice/notification contract intact (notification actions 0-3 order)" >> pr-body.md
+          echo "- [ ] Fork identity intact (app name, dcon4 URLs, com.dcon4.voxremote package)" >> pr-body.md
+          echo "- [ ] Installed on device and smoke-tested" >> pr-body.md
+
+          gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --label upstream-sync \
+            --title "Sync upstream OC Remote ${{ steps.check.outputs.upstream_version }}" \
+            --body-file pr-body.md
+
+      - name: Open issue on merge conflicts
+        if: steps.merge.outputs.result == 'conflicts'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "The weekly sync with upstream could not merge cleanly." > issue-body.md
+          echo "" >> issue-body.md
+          echo "Conflicted files:" >> issue-body.md
+          echo '```' >> issue-body.md
+          cat conflicted_files.txt >> issue-body.md
+          echo '```' >> issue-body.md
+          echo "" >> issue-body.md
+          echo "Run log: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> issue-body.md
+          echo "" >> issue-body.md
+          echo "An agent needs to resolve these conflicts, build, and test locally." >> issue-body.md
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --label upstream-sync \
+            --title "Upstream sync needs manual merge (conflicts)" \
+            --body-file issue-body.md
+
+      - name: Open issue on build failure
+        if: failure() && steps.merge.outputs.result == 'clean'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "The upstream merge applied cleanly, but the build or unit tests failed." > issue-body.md
+          echo "" >> issue-body.md
+          echo "Run log: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> issue-body.md
+          echo "" >> issue-body.md
+          echo "An agent needs to fix the failures (likely fork-identity conflicts in tests or update URLs)." >> issue-body.md
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --label upstream-sync \
+            --title "Upstream sync merge succeeded but build or tests failed" \
+            --body-file issue-body.md
